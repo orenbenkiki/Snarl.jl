@@ -1,0 +1,7 @@
+*.jl.cov
+*.jl.*.cov
+junk*
+/Manifest.toml
+.*.swo
+.*.swp
+test/Manifest.toml

@@ -1,0 +1,7 @@
+name = "Snarl"
+uuid = "d06fb421-3fee-4fe4-8c37-b78363e62f88"
+authors = ["Oren Ben-Kiki <oren@ben-kiki.org>"]
+version = "0.1.0"
+
+[deps]
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
