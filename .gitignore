@@ -1,3 +1,4 @@
+deps/.formatted
 *.jl.cov
 *.jl.*.cov
 junk*
@@ -5,3 +6,4 @@ junk*
 .*.swo
 .*.swp
 test/Manifest.toml
+tracefile.info
