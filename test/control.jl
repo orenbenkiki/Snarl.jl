@@ -4,27 +4,46 @@
 
 const steps_count = 1000
 
-unused_unique = Atomic{Int}(1)
-
-function increment_main_unique()::Int
-    return atomic_add!(unused_unique, 1)
+mutable struct DistributedCounter
+    next::Atomic{Int}
+    DistributedCounter() = new(Atomic{Int}(1))
 end
 
-function last_unique()::Int
-    return unused_unique[] - 1
-end
-
-@everywhere function next_unique!()::Int
-    return @fetchfrom 1 increment_main_unique()
-end
-
-function reset_unique!()::Nothing
-    next_unique[] = 1
+function clear!(counter::DistributedCounter)::Nothing
+    counter.next[] = 1
     return nothing
 end
 
-function reset_unique!()::Nothing
-    unused_unique[] = 1
+function next!(counter::DistributedCounter)::Int
+    return atomic_add!(counter.next, 1)
+end
+
+function used(counter::DistributedCounter)::Int
+    return counter.next[] - 1
+end
+
+unique_counter = DistributedCounter()
+accumulator_counter = DistributedCounter()
+
+function main_next_unique!()::Int
+    return next!(unique_counter)
+end
+
+function main_next_accumulator!()::Int
+    return next!(accumulator_counter)
+end
+
+@everywhere function next_unique!()::Int
+    return @fetchfrom 1 main_next_unique!()
+end
+
+@everywhere function next_accumulator!()::Int
+    return @fetchfrom 1 main_next_accumulator!()
+end
+
+function reset_counters!()::Nothing
+    clear!(unique_counter)
+    clear!(accumulator_counter)
     return nothing
 end
 
@@ -80,9 +99,13 @@ end
 
 @everywhere mutable struct Trackers
     run_step::ContextTrackers
+    run_make_accumulator::ContextTrackers
+    run_collect_step::ContextTrackers
+
     per_process::ContextTrackers
     per_thread::ContextTrackers
     per_step::ContextTrackers
+
     per_step_resets::AbstractArray{Int,1}
 end
 
@@ -91,16 +114,24 @@ function new_trackers()::Trackers
         new_context_trackers(),
         new_context_trackers(),
         new_context_trackers(),
+
         new_context_trackers(),
+        new_context_trackers(),
+        new_context_trackers(),
+
         new_tracking_array(),
     )
 end
 
 function clear!(trackers::Trackers)::Nothing
     clear!(trackers.run_step)
+    clear!(trackers.run_make_accumulator)
+    clear!(trackers.run_collect_step)
+
     clear!(trackers.per_process)
     clear!(trackers.per_thread)
     clear!(trackers.per_step)
+
     fill!(trackers.per_step_resets, 0)
 
     return nothing
@@ -114,12 +145,12 @@ function reset_trackers!()::Nothing
 end
 
 function reset_test!()::Nothing
-    reset_unique!()
+    reset_counters!()
     reset_trackers!()
     return nothing
 end
 
-@everywhere function track_step(resources::ParallelResources, step_index::Int)::Nothing
+@everywhere function track_step(resources::ParallelResources, step_index::Int)::Int
     per_step_context = get_per_step(resources, "context")
     @assert per_step_context.resets > 0
     trackers.per_step_resets[step_index] = per_step_context.resets
@@ -129,7 +160,7 @@ end
     track_context(trackers.per_process, step_index, get_per_process(resources, "context"))
     track_context(trackers.per_thread, step_index, get_per_thread(resources, "context"))
 
-    return nothing
+    return step_index
 end
 
 function check_did_all_steps()::Nothing
@@ -179,7 +210,7 @@ function check_used_threads_of_single_process(
 end
 
 function check_different_unique()::Nothing
-    used_uniques = Array{Bool,1}(undef, last_unique())
+    used_uniques = Array{Bool,1}(undef, used(unique_counter))
     fill!(used_uniques, false)
     for step_index = 1:steps_count
         unique = trackers.run_step.unique[step_index]
@@ -188,7 +219,7 @@ function check_different_unique()::Nothing
     end
 end
 
-function tracking_resources()::ParallelResources
+function foreach_resources()::ParallelResources
     resources = ParallelResources()
     add_per_process!(resources, "context", make = OperationContext)
     add_per_thread!(resources, "context", make = OperationContext)
@@ -197,7 +228,7 @@ function tracking_resources()::ParallelResources
 end
 
 function run_foreach(foreach::Function; flags...)::Nothing
-    foreach(track_step, tracking_resources(), 1:steps_count; flags...)
+    foreach(track_step, foreach_resources(), 1:steps_count; flags...)
     return nothing
 end
 
@@ -239,7 +270,7 @@ end
         @testset "invalid" begin
             @test_throws ArgumentError s_foreach(
                 track_step,
-                tracking_resources(),
+                foreach_resources(),
                 1:1,
                 simd = :invalid,
             )
@@ -306,7 +337,7 @@ function check_used_single_thread_of_processes(
 end
 
 function check_different_unique()::Nothing
-    used_uniques = Array{Bool,1}(undef, last_unique())
+    used_uniques = Array{Bool,1}(undef, used(unique_counter))
     fill!(used_uniques, false)
     for step_index = 1:steps_count
         unique = trackers.run_step.unique[step_index]
@@ -314,7 +345,6 @@ function check_different_unique()::Nothing
         used_uniques[unique] = true
     end
 end
-
 
 function check_d_foreach(; expected_used_processes::Int = nprocs(), flags...)::Nothing
     reset_test!()
@@ -349,5 +379,53 @@ end
         @testset "all" begin
             check_d_foreach(expected_used_processes = 1, minimal_batch = typemax(Int))
         end
+    end
+end
+
+function collect_resources()::ParallelResources
+    resources = foreach_resources()
+    add_per_thread!(resources, "accumulator", make = track_make_accumulator)
+    return resources
+end
+
+function track_make_accumulator()::Array{Int,1}
+    track_context(trackers.run_make_accumulator, next_accumulator!(), OperationContext())
+    accumulator = Array{Int,1}(undef, 1)
+    accumulator[1] = 0
+    return accumulator
+end
+
+function track_collect(accumulator::Array{Int,1}, step_index::Int)::Nothing
+    track_context(trackers.run_collect_step, step_index, OperationContext())
+    accumulator[1] += step_index
+    return nothing
+end
+
+function check_used_single_accumulator(process::Int)::Nothing
+    @test trackers.run_make_accumulator.process[1] == process
+    @views check_same_values(trackers.run_make_accumulator.process[2:steps_count], 0)
+    return nothing
+end
+
+function run_collect(collect::Function; flags...)::Nothing
+    accumulated =
+        collect(track_collect, track_step, collect_resources(), 1:steps_count; flags...)
+    @test accumulated[] == round(Int, steps_count * (steps_count + 1) / 2)
+    return nothing
+end
+
+function check_s_collect(; flags...)::Nothing
+    reset_test!()
+    run_collect(s_collect; flags...)
+    check_did_all_steps()
+    check_used_threads_of_single_process(1)
+    check_different_unique()
+    check_used_single_accumulator(1)
+    return nothing
+end
+
+@testset "s_collect" begin
+    @testset "default" begin
+        check_s_collect()
     end
 end

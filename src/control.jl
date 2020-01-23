@@ -12,6 +12,7 @@ export SimdFlag
 export default_simd
 export default_batch_factor
 export s_foreach
+export s_collect
 export t_foreach
 export d_foreach
 
@@ -42,10 +43,11 @@ const default_batch_factor = 4
     s_foreach(step::Function, resources::ParallelResources, values::collection;
               simd=default_simd)
 
-Perform a step for each value in the collection, serially, using the current thread in the current
+Perform `step` for each `value` in `values`, serially, using the current thread in the current
 process.
 
-This is implemented as a simple loop using the specified `simd`.
+This is implemented as a simple loop using the specified `simd`, which repeatedly invoked
+`step(resources, value)`. The return value of `step` is discarded.
 
 Having this makes it easier to convert a parallel loop to a serial one, for example for measuring
 performance.
@@ -76,6 +78,44 @@ function s_foreach(
     end
 
     return nothing
+end
+
+"""
+    s_collect(collect::Function, step::Function, resources::ParallelResources, values::collection;
+              simd=default_simd)
+
+Perform `step` for each `value` in `values`, serially, using the current thread in the current
+process; `collect` the returned results into a single accumulator and return it.
+
+This is implemented as a simple loop using the specified `simd`, which repeatedly invokes
+`step(resources, value)`. The `collect(accumulator, step_result)` is likewise repeatedly invoked to
+accumulate the step results into a single per-thread resource named `accumulator`. The return value
+of `collect` is ignored.
+
+!!! note
+
+    The `accumulator` must be mutable. This is different from the classical `reduce` operation which
+    takes two values and returns a merged result (possibly in different object). For example, to
+    perform a sum of integers using `collect`, define the `accumulator` to be an array with a single
+    entry.
+
+Having this makes it easier to convert a parallel collection to a serial one, for example for
+measuring performance.
+"""
+function s_collect(
+    collect::Function,
+    step::Function,
+    resources::ParallelResources,
+    values;
+    simd::SimdFlag = default_simd,
+)::Any
+    accumulator = get_per_thread(resources, "accumulator")
+
+    s_foreach(resources, values, simd = simd) do resources, value
+        collect(accumulator, step(resources, value))
+    end
+
+    return accumulator
 end
 
 function batch_values(values, batch_index::Int, batch_size::Number)::Any
