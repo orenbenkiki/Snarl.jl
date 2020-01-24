@@ -212,14 +212,13 @@ mutable struct LocalResource
 end
 
 """
-    get_value(resource::LocalResource)::Any
+    get_value(resource::LocalResource, thread_id=threadid())::Any
 
-Get the value of a local resource.
+Get the value of a local resource for the specified thread (by default, the current thread).
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_value(resource::LocalResource)::Any
-    thread_id = Threads.threadid()
+function get_value(resource::LocalResource, thread_id = Threads.threadid())::Any
     value = resource.values[thread_id]
     if value == nothing
         @assert resource.make != nothing "Getting missing resource without a make function"
@@ -359,10 +358,11 @@ end
 """
     get_per_process(resources::ParallelResources, name::String)
 
-Obtain the value of a per-process resource from the container by its name. The value will be created
-if necessary (once per process). It will be shared by all the threads of the process, so either
-access would be read-only, thread-safe mutation, or the threads will need to coordinate their access
-in some way, for example using `with_per_process`.
+Obtain the value of a per-process resource from the container by its name.
+
+The value will be created if necessary (once per process). It will be shared by all the threads of
+the process, so either access would be read-only, thread-safe mutation, or the threads will need to
+coordinate their access in some way, for example using `with_per_process`.
 
 This will create the value if necessary using the registered `make` function.
 """
@@ -374,8 +374,10 @@ end
     with_per_process(body::Function, resources::ParallelResources, name::String)
 
 Invoke and return the results of the `body` function, which is given exclusive access to the
-per-process resource value, by using its semaphore. This assumes no other thread is using
-`get_per_process` to get direct access to the resource value in parallel.
+per-process resource value, by using its semaphore.
+
+This assumes no other thread is using `get_per_process` to get direct access to the resource value
+in parallel.
 
 This will create the value if necessary using the registered `make` function.
 """
@@ -384,16 +386,22 @@ function with_per_process(body::Function, resources::ParallelResources, name::St
 end
 
 """
-    get_per_thread(resources::ParallelResources, name::String)
+    get_per_thread(resources::ParallelResources, name::String, thread_id=threadid())
 
-Obtain the value of a per-thread resource from the container by its name. The value will be created
-if necessary (once per thread). If previous steps executed in the thread, then their modifications
-to the value will be visible in following steps.
+Obtain the value of a per-thread resource from the container by its name, for the specified thread
+(by default, the current one).
+
+The value will be created if necessary (once per thread). If previous steps executed in the thread,
+then their modifications to the value will be visible in following steps.
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_per_thread(resources::ParallelResources, name::String)::Any
-    return get_value(resources.per_thread[name])
+function get_per_thread(
+    resources::ParallelResources,
+    name::String,
+    thread_id = Threads.threadid(),
+)::Any
+    return get_value(resources.per_thread[name], thread_id)
 end
 
 """

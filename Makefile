@@ -2,19 +2,19 @@
 check: unreached_lines
 
 .PHONY: ci_build
-ci_build: format unindexed check
+ci_build: format unindexed_files check
 
 .PHONY: pre_commit
-pre_commit: _unindexed ci_build line_coverage
+pre_commit: _unindexed_files ci_build line_coverage
 	git status
 
-.PHONY: _unindexed
-_unindexed:
-	@deps/unindexed.sh
+.PHONY: _unindexed_files
+_unindexed_files:
+	@deps/unindexed_files.sh
 
-.PHONY: unindexed
-unindexed:
-	deps/unindexed.sh
+.PHONY: unindexed_files
+unindexed_files:
+	deps/unindexed_files.sh
 
 .PHONY: format
 format: deps/.formatted

@@ -38,8 +38,8 @@ BEGIN {
     unreached = 0
     reached = 0
 }
-/Only seems unreached/ { next }
-$3 == 0 && /Not reached/ { next }
+/only seems unreached/i { next }
+$3 == 0 && /not reached/i { next }
 $3 == 0 {
     print $1, $2, " - " $4
     unreached += 1
@@ -50,10 +50,10 @@ $3 == 0 {
 }
 END {
     if (unreached > 0) {
-        printf("ERROR: %s unreached lines without a NOT REACHED annotation\n", unreached)
+        printf("ERROR: %s unreached lines without a \"Not tested\" annotation\n", unreached)
     }
     if (reached > 0) {
-        printf("ERROR: %s reached lines with a NOT REACHED annotation\n", reached)
+        printf("ERROR: %s reached lines with a \"Not tested\" annotation\n", reached)
     }
     if (unreached > 0 || reached > 0) {
         exit(1)

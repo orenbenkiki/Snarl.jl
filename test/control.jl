@@ -2,7 +2,7 @@
 @everywhere using Snarl.Resources
 @everywhere using Snarl.Control
 
-const steps_count = 1000
+const steps_count = 100
 
 mutable struct DistributedCounter
     next::Atomic{Int}
@@ -24,6 +24,7 @@ end
 
 unique_counter = DistributedCounter()
 accumulator_counter = DistributedCounter()
+merge_counter = DistributedCounter()
 
 function main_next_unique!()::Int
     return next!(unique_counter)
@@ -31,6 +32,10 @@ end
 
 function main_next_accumulator!()::Int
     return next!(accumulator_counter)
+end
+
+function main_next_merge!()::Int
+    return next!(merge_counter)
 end
 
 @everywhere function next_unique!()::Int
@@ -41,9 +46,14 @@ end
     return @fetchfrom 1 main_next_accumulator!()
 end
 
+@everywhere function next_merge!()::Int
+    return @fetchfrom 1 main_next_merge!()
+end
+
 function reset_counters!()::Nothing
     clear!(unique_counter)
     clear!(accumulator_counter)
+    clear!(merge_counter)
     return nothing
 end
 
@@ -101,6 +111,7 @@ end
     run_step::ContextTrackers
     run_make_accumulator::ContextTrackers
     run_collect_step::ContextTrackers
+    run_merge_accumulators::ContextTrackers
 
     per_process::ContextTrackers
     per_thread::ContextTrackers
@@ -111,6 +122,7 @@ end
 
 function new_trackers()::Trackers
     return Trackers(
+        new_context_trackers(),
         new_context_trackers(),
         new_context_trackers(),
         new_context_trackers(),
@@ -127,6 +139,7 @@ function clear!(trackers::Trackers)::Nothing
     clear!(trackers.run_step)
     clear!(trackers.run_make_accumulator)
     clear!(trackers.run_collect_step)
+    clear!(trackers.run_merge_accumulators)
 
     clear!(trackers.per_process)
     clear!(trackers.per_thread)
@@ -163,14 +176,6 @@ end
     return step_index
 end
 
-function check_did_all_steps()::Nothing
-    for step = 1:steps_count
-        @test trackers.run_step.process[step] > 0
-    end
-
-    return nothing
-end
-
 function check_same_values(values::AbstractArray, expected::Any)::Nothing
     for actual in values
         @test actual == expected
@@ -179,23 +184,28 @@ function check_same_values(values::AbstractArray, expected::Any)::Nothing
     return nothing
 end
 
-function check_used_single_process(process::Int)::Nothing
-    check_same_values(trackers.per_process.process, process)
-    check_same_values(trackers.per_thread.process, process)
-    check_same_values(trackers.per_step.process, process)
-    check_same_values(trackers.run_step.process, process)
+function check_steps_did_run()::Nothing
+    for step = 1:steps_count
+        @test trackers.run_step.process[step] > 0
+    end
 
     return nothing
 end
 
-function check_used_threads_of_single_process(
-    expected_used_threads::Int,
-    process::Int = myid(),
-)::Nothing
+function check_steps_used_single_process()::Nothing
+    check_same_values(trackers.per_process.process, myid())
+    check_same_values(trackers.per_thread.process, myid())
+    check_same_values(trackers.per_step.process, myid())
+    check_same_values(trackers.run_step.process, myid())
+
+    return nothing
+end
+
+function check_steps_used_threads_of_single_process(expected_used_threads::Int)::Nothing
     used_threads = Array{Bool,1}(undef, nthreads())
     fill!(used_threads, false)
 
-    check_used_single_process(process)
+    check_steps_used_single_process()
 
     for step = 1:steps_count
         thread = trackers.run_step.thread[step]
@@ -209,7 +219,7 @@ function check_used_threads_of_single_process(
     return nothing
 end
 
-function check_different_unique()::Nothing
+function check_step_used_different_uniques()::Nothing
     used_uniques = Array{Bool,1}(undef, used(unique_counter))
     fill!(used_uniques, false)
     for step_index = 1:steps_count
@@ -232,11 +242,11 @@ function run_foreach(foreach::Function; flags...)::Nothing
     return nothing
 end
 
-function check_used_single_thread_of_single_process(process::Int = myid())::Nothing
+function check_used_single_thread_of_single_process()::Nothing
     thread = trackers.per_thread.thread[1]
     @test thread > 0
 
-    check_used_single_process(process)
+    check_steps_used_single_process()
 
     check_same_values(trackers.per_process.thread, thread)
     check_same_values(trackers.per_thread.thread, thread)
@@ -249,9 +259,9 @@ end
 function check_s_foreach(; flags...)::Nothing
     reset_test!()
     run_foreach(s_foreach; flags...)
-    check_did_all_steps()
-    check_used_threads_of_single_process(1)
-    check_different_unique()
+    check_steps_did_run()
+    check_steps_used_threads_of_single_process(1)
+    check_step_used_different_uniques()
     return nothing
 end
 
@@ -281,9 +291,9 @@ end
 function check_t_foreach(; expected_used_threads::Int = nthreads(), flags...)::Nothing
     reset_test!()
     run_foreach(t_foreach; flags...)
-    check_did_all_steps()
-    check_used_threads_of_single_process(expected_used_threads)
-    check_different_unique()
+    check_steps_did_run()
+    check_steps_used_threads_of_single_process(expected_used_threads)
+    check_step_used_different_uniques()
     return nothing
 end
 
@@ -336,7 +346,7 @@ function check_used_single_thread_of_processes(
     return nothing
 end
 
-function check_different_unique()::Nothing
+function check_step_used_different_uniques()::Nothing
     used_uniques = Array{Bool,1}(undef, used(unique_counter))
     fill!(used_uniques, false)
     for step_index = 1:steps_count
@@ -349,9 +359,9 @@ end
 function check_d_foreach(; expected_used_processes::Int = nprocs(), flags...)::Nothing
     reset_test!()
     run_foreach(d_foreach; flags...)
-    check_did_all_steps()
+    check_steps_did_run()
     check_used_single_thread_of_processes(expected_used_processes)
-    check_different_unique()
+    check_step_used_different_uniques()
     return nothing
 end
 
@@ -382,50 +392,122 @@ end
     end
 end
 
+mutable struct Accumulator
+    count::Int
+    sum::Int
+    unique::Int
+    Accumulator() = new(0, 0, next_accumulator!())
+end
+
+function track_make_accumulator()::Accumulator
+    accumulator = Accumulator()
+    track_context(trackers.run_make_accumulator, accumulator.unique, OperationContext())
+    return accumulator
+end
+
+function track_collect(accumulator::Accumulator, step_index::Int)::Nothing
+    track_context(trackers.run_collect_step, step_index, OperationContext())
+    accumulator.count += 1
+    accumulator.sum += step_index
+    return nothing
+end
+
+function track_collect(
+    into_accumulator::Accumulator,
+    from_accumulator::Accumulator,
+)::Nothing
+    track_context(trackers.run_merge_accumulators, next_merge!(), OperationContext())
+    into_accumulator.count += from_accumulator.count
+    into_accumulator.sum += from_accumulator.sum
+    return nothing
+end
+
 function collect_resources()::ParallelResources
     resources = foreach_resources()
     add_per_thread!(resources, "accumulator", make = track_make_accumulator)
     return resources
 end
 
-function track_make_accumulator()::Array{Int,1}
-    track_context(trackers.run_make_accumulator, next_accumulator!(), OperationContext())
-    accumulator = Array{Int,1}(undef, 1)
-    accumulator[1] = 0
-    return accumulator
-end
-
-function track_collect(accumulator::Array{Int,1}, step_index::Int)::Nothing
-    track_context(trackers.run_collect_step, step_index, OperationContext())
-    accumulator[1] += step_index
+function check_used_accumulators(expected_used_accumulators::Int)::Nothing
+    @views check_same_values(
+        trackers.run_make_accumulator.process[1:expected_used_accumulators],
+        myid(),
+    )
+    @views check_same_values(
+        trackers.run_make_accumulator.process[expected_used_accumulators+1:steps_count],
+        0,
+    )
     return nothing
 end
 
-function check_used_single_accumulator(process::Int)::Nothing
-    @test trackers.run_make_accumulator.process[1] == process
-    @views check_same_values(trackers.run_make_accumulator.process[2:steps_count], 0)
+function check_used_merges(expected_used_merges::Int)::Nothing
+    @views check_same_values(
+        trackers.run_merge_accumulators.process[1:expected_used_merges],
+        myid(),
+    )
+    @views check_same_values(
+        trackers.run_merge_accumulators.process[expected_used_merges+1:steps_count],
+        0,
+    )
     return nothing
 end
 
 function run_collect(collect::Function; flags...)::Nothing
     accumulated =
         collect(track_collect, track_step, collect_resources(), 1:steps_count; flags...)
-    @test accumulated[] == round(Int, steps_count * (steps_count + 1) / 2)
+    @test accumulated.count == steps_count
+    @test accumulated.sum == round(Int, steps_count * (steps_count + 1) / 2)
     return nothing
 end
 
 function check_s_collect(; flags...)::Nothing
     reset_test!()
     run_collect(s_collect; flags...)
-    check_did_all_steps()
-    check_used_threads_of_single_process(1)
-    check_different_unique()
-    check_used_single_accumulator(1)
+    check_steps_did_run()
+    check_steps_used_threads_of_single_process(1)
+    check_step_used_different_uniques()
+    check_used_accumulators(1)
+    check_used_merges(0)
     return nothing
 end
 
 @testset "s_collect" begin
     @testset "default" begin
         check_s_collect()
+    end
+end
+
+function check_t_collect(; expected_used_threads = nthreads(), flags...)::Nothing
+    reset_test!()
+    run_collect(t_collect; flags...)
+    check_steps_did_run()
+    check_steps_used_threads_of_single_process(expected_used_threads)
+    check_step_used_different_uniques()
+    check_used_accumulators(expected_used_threads)
+    check_used_merges(expected_used_threads - 1)
+    return nothing
+end
+
+@testset "t_collect" begin
+    @testset "default" begin
+        check_t_collect()
+    end
+
+    @testset "batch_factor" begin
+        @testset "one" begin
+            check_t_collect(batch_factor = 1)
+        end
+        @testset "many" begin
+            check_t_collect(batch_factor = typemax(Int))
+        end
+    end
+
+    @testset "minimal_batch" begin
+        @testset "half" begin
+            check_t_collect(expected_used_threads = 2, minimal_batch = div(steps_count, 2))
+        end
+        @testset "all" begin
+            check_t_collect(expected_used_threads = 1, minimal_batch = typemax(Int))
+        end
     end
 end

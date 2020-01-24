@@ -14,7 +14,9 @@ export default_batch_factor
 export s_foreach
 export s_collect
 export t_foreach
+export t_collect
 export d_foreach
+export d_collect
 
 """
 The `@simd` directive to use for an inner loop.
@@ -94,9 +96,9 @@ of `collect` is ignored.
 
 !!! note
 
-    The `accumulator` must be mutable. This is different from the classical `reduce` operation which
+    The accumulator must be mutable. This is different from the classical `reduce` operation which
     takes two values and returns a merged result (possibly in different object). For example, to
-    perform a sum of integers using `collect`, define the `accumulator` to be an array with a single
+    perform a sum of integers using `collect`, define the accumulator to be an array with a single
     entry.
 
 Having this makes it easier to convert a parallel collection to a serial one, for example for
@@ -140,8 +142,7 @@ function batches_data(
     @assert runners_count > 1
 
     if length(values) <= minimal_batch
-        s_foreach(step, resources, values, simd = simd)
-        return 0, 0.0
+        return 1, length(values)
     end
 
     batches_count = runners_count * batch_factor
@@ -181,7 +182,8 @@ function t_foreach(
     batches_count, batch_size =
         batches_data(step, resources, values, batch_factor, minimal_batch, simd, nthreads())
 
-    if batches_count <= 0
+    if batches_count <= 1
+        s_foreach(step, resources, values, simd = simd)
         return nothing
     end
 
@@ -210,6 +212,98 @@ function t_foreach(
     end
 
     return nothing
+end
+
+function make_status_of_threads()::Array{Int,1}
+    status_of_threads = Array{Symbol,1}(undef, nthreads())
+    fill!(status_of_threads, :empty)
+    return status_of_threads
+end
+
+"""
+    t_collect(collect::Function, step::Function, resources::ParallelResources, values::collection;
+              batch_factor=default_batch_factor, simd=default_simd)
+
+Perform `step` for each `value` in `values`, serially, using multiple threads in the current
+process; `collect` the returned results into a single accumulator and return it. To manage this,
+a per-process `_pending_threads` resource is added.
+
+This builds on `s_collect` to accumulate results in each thread. The per-thread accumulators are
+merged together (in multiple threads) by invoking `collect(into_accumulator, from_accumulator)`.
+The final result is returned.
+"""
+function t_collect(
+    collect::Function,
+    step::Function,
+    resources::ParallelResources,
+    values;
+    batch_factor::Int = default_batch_factor,
+    minimal_batch::Int = 1,
+    simd::SimdFlag = default_simd,
+)::Any
+    batches_count, batch_size =
+        batches_data(step, resources, values, batch_factor, minimal_batch, simd, nthreads())
+
+    if batches_count <= 1
+        return s_collect(collect, step, resources, values, simd = simd)
+    end
+
+    add_per_process!(resources, "_pending_threads", make = () -> Array{Int,1}(undef, 0))
+
+    function merge_accumulators()::Nothing
+        thread_id = threadid()
+        while true
+            other_id = 0
+            with_per_process(resources, "_pending_threads") do pending_threads
+                if length(pending_threads) > 0
+                    other_id = pop!(pending_threads)
+                else
+                    push!(pending_threads, thread_id)
+                end
+            end
+            other_id > 0 || break
+            into_id = min(thread_id, other_id)
+            from_id = max(thread_id, other_id)
+            collect(
+                get_per_thread(resources, "accumulator", into_id),
+                get_per_thread(resources, "accumulator", from_id),
+            )
+            thread_id = into_id
+        end
+    end
+
+    if batches_count <= nthreads()
+        @threads for batch_index = 1:batches_count
+            s_collect(
+                collect,
+                step,
+                resources,
+                batch_values(values, batch_index, batch_size),
+                simd = simd,
+            )
+            merge_accumulators()
+        end
+    else
+        next_batch_index = Atomic{Int}(nthreads() + 1)
+        @threads for batch_index = 1:nthreads()
+            while batch_index <= batches_count
+                s_collect(
+                    collect,
+                    step,
+                    resources,
+                    batch_values(values, batch_index, batch_size),
+                    simd = simd,
+                )
+                batch_index = atomic_add!(next_batch_index, 1)
+            end
+            merge_accumulators()
+        end
+    end
+
+    pending_threads = get_per_process(resources, "_pending_threads")
+    @assert length(pending_threads) == 1
+    @assert pending_threads[1] == 1
+    return get_per_thread(resources, "accumulator", 1)
 end
 
 next_process = Atomic{Int}(myid())
@@ -245,7 +339,8 @@ function d_foreach(
     batches_count, batch_size =
         batches_data(step, resources, values, batch_factor, minimal_batch, simd, nprocs())
 
-    if batches_count <= 0
+    if batches_count <= 1
+        s_foreach(step, resources, values, simd = simd)
         return nothing
     end
 
