@@ -9,6 +9,7 @@ using Distributed
 export @send_everywhere
 export launched
 export threads_count_of_processes
+export total_threads_count
 
 function run_everywhere(body::Function)::Nothing
     @sync begin
@@ -43,7 +44,15 @@ macro send_everywhere(name, value)
     end
 end
 
+"""
+An array containing the threads count in each of the processes.
+"""
 threads_count_of_processes = nothing
+
+"""
+The total threads count in all the processes.
+"""
+total_threads_count = 0
 
 """
     launched()
@@ -62,9 +71,16 @@ function launched()::Nothing
 
     global threads_count_of_processes
     threads_count_of_processes = values
+    global total_threads_count
+    total_threads_count = sum(values)
 
-    @sync for worker = 2:nprocs()
-        @spawnat worker threads_count_of_processes = values
+    @sync for process = 1:nprocs()
+        @spawnat process begin
+            global threads_count_of_processes
+            threads_count_of_processes = values
+            global total_threads_count
+            total_threads_count = sum(values)
+        end
     end
 
     return nothing

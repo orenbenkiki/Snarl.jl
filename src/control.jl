@@ -120,9 +120,18 @@ function s_collect(
     return accumulator
 end
 
-function batch_values(values, batch_index::Int, batch_size::Number)::Any
-    first_step_index = round(Int, (batch_index - 1) * batch_size) + 1
-    last_step_index = round(Int, batch_index * batch_size)
+function batch_values_view(values, batch_size::Number, batch_index::Int)::Any
+    return batches_values_view(values, batch_size, batch_index, batch_index)
+end
+
+function batches_values_view(
+    values,
+    batch_size::Number,
+    first_batch_index::Int,
+    last_batch_index::Int,
+)::Any
+    first_step_index = round(Int, (first_batch_index - 1) * batch_size) + 1
+    last_step_index = round(Int, last_batch_index * batch_size)
     @assert 1 <= first_step_index &&
             first_step_index <= last_step_index && last_step_index <= length(values)
     return @views values[first_step_index:last_step_index]
@@ -184,33 +193,61 @@ function t_foreach(
 
     if batches_count <= 1
         s_foreach(step, resources, values, simd = simd)
-        return nothing
+    elseif batches_count <= nthreads()
+        t_foreach_up_to_nthreads(step, resources, values, batch_size, batches_count, simd)
+    else
+        t_foreach_more_than_threads(
+            step,
+            resources,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+        )
     end
 
-    if batches_count <= nthreads()
-        @threads for batch_index = 1:batches_count
+    return nothing
+end
+
+function t_foreach_up_to_nthreads(
+    step::Function,
+    resources::ParallelResources,
+    values,
+    batch_size::Number,
+    batches_count::Int,
+    simd::SimdFlag = default_simd,
+)::Nothing
+    @threads for batch_index = 1:batches_count
+        s_foreach(
+            step,
+            resources,
+            batch_values_view(values, batch_size, batch_index),
+            simd = simd,
+        )
+    end
+    return nothing
+end
+
+function t_foreach_more_than_threads(
+    step::Function,
+    resources::ParallelResources,
+    values,
+    batch_size::Number,
+    batches_count::Int,
+    simd::SimdFlag = default_simd,
+)::Nothing
+    next_batch_index = Atomic{Int}(nthreads() + 1)
+    @threads for batch_index = 1:nthreads()
+        while batch_index <= batches_count
             s_foreach(
                 step,
                 resources,
-                batch_values(values, batch_index, batch_size),
+                batch_values_view(values, batch_size, batch_index),
                 simd = simd,
             )
-        end
-    else
-        next_batch_index = Atomic{Int}(nthreads() + 1)
-        @threads for batch_index = 1:nthreads()
-            while batch_index <= batches_count
-                s_foreach(
-                    step,
-                    resources,
-                    batch_values(values, batch_index, batch_size),
-                    simd = simd,
-                )
-                batch_index = atomic_add!(next_batch_index, 1)
-            end
+            batch_index = atomic_add!(next_batch_index, 1)
         end
     end
-
     return nothing
 end
 
@@ -250,60 +287,106 @@ function t_collect(
 
     add_per_process!(resources, "_pending_threads", make = () -> Array{Int,1}(undef, 0))
 
-    function merge_accumulators()::Nothing
-        thread_id = threadid()
-        while true
-            other_id = 0
-            with_per_process(resources, "_pending_threads") do pending_threads
-                if length(pending_threads) > 0
-                    other_id = pop!(pending_threads)
-                else
-                    push!(pending_threads, thread_id)
-                end
-            end
-            other_id > 0 || break
-            into_id = min(thread_id, other_id)
-            from_id = max(thread_id, other_id)
-            collect(
-                get_per_thread(resources, "accumulator", into_id),
-                get_per_thread(resources, "accumulator", from_id),
-            )
-            thread_id = into_id
-        end
-    end
-
     if batches_count <= nthreads()
-        @threads for batch_index = 1:batches_count
-            s_collect(
-                collect,
-                step,
-                resources,
-                batch_values(values, batch_index, batch_size),
-                simd = simd,
-            )
-            merge_accumulators()
-        end
+        t_collect_up_to_nthreads(
+            collect,
+            step,
+            resources,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+        )
     else
-        next_batch_index = Atomic{Int}(nthreads() + 1)
-        @threads for batch_index = 1:nthreads()
-            while batch_index <= batches_count
-                s_collect(
-                    collect,
-                    step,
-                    resources,
-                    batch_values(values, batch_index, batch_size),
-                    simd = simd,
-                )
-                batch_index = atomic_add!(next_batch_index, 1)
-            end
-            merge_accumulators()
-        end
+        t_collect_more_than_threads(
+            collect,
+            step,
+            resources,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+        )
     end
 
     pending_threads = get_per_process(resources, "_pending_threads")
     @assert length(pending_threads) == 1
     @assert pending_threads[1] == 1
     return get_per_thread(resources, "accumulator", 1)
+end
+
+function t_collect_up_to_nthreads(
+    collect::Function,
+    step::Function,
+    resources::ParallelResources,
+    values,
+    batch_size::Number,
+    batches_count::Int,
+    simd::SimdFlag,
+)::Nothing
+    @threads for batch_index = 1:batches_count
+        s_collect(
+            collect,
+            step,
+            resources,
+            batch_values_view(values, batch_size, batch_index),
+            simd = simd,
+        )
+        merge_accumulators(collect, resources)
+    end
+
+    return nothing
+end
+
+function t_collect_more_than_threads(
+    collect::Function,
+    step::Function,
+    resources::ParallelResources,
+    values,
+    batch_size::Number,
+    batches_count::Int,
+    simd::SimdFlag,
+)::Nothing
+    next_batch_index = Atomic{Int}(nthreads() + 1)
+    @threads for batch_index = 1:nthreads()
+        while batch_index <= batches_count
+            s_collect(
+                collect,
+                step,
+                resources,
+                batch_values_view(values, batch_size, batch_index),
+                simd = simd,
+            )
+            batch_index = atomic_add!(next_batch_index, 1)
+        end
+        merge_accumulators(collect, resources)
+    end
+
+    return nothing
+end
+
+function merge_accumulators(collect::Function, resources::ParallelResources)::Nothing
+    thread_id = threadid()
+    while true
+        other_id = 0
+        with_per_process(resources, "_pending_threads") do pending_threads
+            if length(pending_threads) > 0
+                other_id = pop!(pending_threads)
+            else
+                push!(pending_threads, thread_id)
+            end
+        end
+        other_id > 0 || break
+        into_id = min(thread_id, other_id)
+        from_id = max(thread_id, other_id)
+        collect(
+            get_per_thread(resources, "accumulator", into_id),
+            get_per_thread(resources, "accumulator", from_id),
+        )
+        thread_id = into_id
+    end
+
+    return nothing
 end
 
 next_process = Atomic{Int}(myid())
@@ -341,18 +424,32 @@ function d_foreach(
 
     if batches_count <= 1
         s_foreach(step, resources, values, simd = simd)
-        return nothing
+    elseif batches_count <= nprocs()
+        d_foreach_up_to_nprocs(step, resources, values, batch_size, batches_count, simd)
+    else
+        d_foreach_more_than_nprocs(step, resources, values, batch_size, batches_count, simd)
     end
 
-    if batches_count <= nprocs()
+    return nothing
+end
+
+function d_foreach_up_to_nprocs(
+    step::Function,
+    resources::ParallelResources,
+    values,
+    batch_size::Number,
+    batches_count::Int,
+    simd::SimdFlag,
+)::Nothing
+    @sync begin
         batch_index = 1
-        @sync while batch_index < batches_count
+        while batch_index < batches_count
             process_id = next_process!()
             process_id != myid() || continue
             @spawnat process_id s_foreach(
                 step,
                 resources,
-                batch_values(values, batch_index, batch_size),
+                batch_values_view(values, batch_size, batch_index),
                 simd = simd,
             )
             batch_index += 1
@@ -361,40 +458,53 @@ function d_foreach(
         s_foreach(
             step,
             resources,
-            batch_values(values, batch_index, batch_size),
+            batch_values_view(values, batch_size, batch_index),
             simd = simd,
         )
+    end
 
-    else
-        jobs_channel = RemoteChannel(() -> Channel{Tuple{Int,Any}}(batches_count * 2))
+    return nothing
+end
 
-        function run_batches()::Nothing
-            while true
-                batch_index, batch_values = take!(jobs_channel)
-                batch_index > 0 || break
-                s_foreach(step, resources, batch_values, simd = simd)
-            end
-            return nothing
+function d_foreach_more_than_nprocs(
+    step::Function,
+    resources::ParallelResources,
+    values,
+    batch_size::Number,
+    batches_count::Int,
+    simd::SimdFlag,
+)::Nothing
+    jobs_channel = RemoteChannel(() -> Channel{Any}(batches_count * 2))
+
+    @sync begin
+        for batch_index = 1:batches_count
+            put!(jobs_channel, batch_values_view(values, batch_size, batch_index))
         end
 
-        @sync begin
-            for batch_index = 1:batches_count
-                put!(
-                    jobs_channel,
-                    (batch_index, batch_values(values, batch_index, batch_size)),
-                )
-            end
-
-            for batch_index = 1:batches_count
-                put!(jobs_channel, (0, nothing))
-            end
-
-            for process_index in workers()
-                @spawnat process_index run_batches()
-            end
-
-            run_batches()
+        for _batch_index = 1:batches_count
+            put!(jobs_channel, nothing)
         end
+
+        for process_id in workers()
+            @spawnat process_id run_jobs_batches(jobs_channel, step, resources, simd)
+        end
+
+        run_jobs_batches(jobs_channel, step, resources, simd)
+    end
+
+    return nothing
+end
+
+function run_jobs_batches(
+    jobs_channel::RemoteChannel{Channel{Any}},
+    step::Function,
+    resources::ParallelResources,
+    simd::SimdFlag,
+)::Nothing
+    while true
+        batch_values = take!(jobs_channel)
+        batch_values != nothing || break
+        s_foreach(step, resources, batch_values, simd = simd)
     end
 
     return nothing

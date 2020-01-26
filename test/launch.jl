@@ -14,8 +14,10 @@ function check_threads_count_of_processes(
     @test length(some_threads_count_of_processes) == nprocs()
 
     for threads_count in some_threads_count_of_processes
-        @assert threads_count == nthreads()
+        @test threads_count == nthreads()
     end
+
+    @test total_threads_count == sum(threads_count_of_processes)
 
     return nothing
 end
