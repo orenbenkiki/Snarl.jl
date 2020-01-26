@@ -345,17 +345,37 @@ function d_foreach(
     end
 
     if batches_count <= nprocs()
-        @sync for batch_index = 1:batches_count
-            @spawnat next_process!() s_foreach(
+        batch_index = 1
+        @sync while batch_index < batches_count
+            process_id = next_process!()
+            process_id != myid() || continue
+            @spawnat process_id s_foreach(
                 step,
                 resources,
                 batch_values(values, batch_index, batch_size),
                 simd = simd,
             )
+            batch_index += 1
         end
+
+        s_foreach(
+            step,
+            resources,
+            batch_values(values, batch_index, batch_size),
+            simd = simd,
+        )
+
     else
         jobs_channel = RemoteChannel(() -> Channel{Tuple{Int,Any}}(batches_count * 2))
-        started_channel = RemoteChannel(() -> Channel{Bool}(nworkers()))
+
+        function run_batches()::Nothing
+            while true
+                batch_index, batch_values = take!(jobs_channel)
+                batch_index > 0 || break
+                s_foreach(step, resources, batch_values, simd = simd)
+            end
+            return nothing
+        end
 
         @sync begin
             for batch_index = 1:batches_count
@@ -369,23 +389,8 @@ function d_foreach(
                 put!(jobs_channel, (0, nothing))
             end
 
-            function run_batches()::Nothing
-                put!(started_channel, true)
-                while true
-                    batch_index, batch_values = take!(jobs_channel)
-                    batch_index > 0 || break
-                    s_foreach(step, resources, batch_values, simd = simd)
-                    sleep(0.01)
-                end
-                return nothing
-            end
-
             for process_index in workers()
                 @spawnat process_index run_batches()
-            end
-
-            for _process_index in workers()
-                take!(started_channel)
             end
 
             run_batches()

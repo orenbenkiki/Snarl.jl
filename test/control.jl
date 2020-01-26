@@ -164,6 +164,8 @@ function reset_test!()::Nothing
 end
 
 @everywhere function track_step(resources::ParallelResources, step_index::Int)::Int
+    sleep(0.05)
+
     per_step_context = get_per_step(resources, "context")
     @assert per_step_context.resets > 0
     trackers.per_step_resets[step_index] = per_step_context.resets
