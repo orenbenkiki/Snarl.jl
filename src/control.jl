@@ -217,6 +217,8 @@ function t_foreach_up_to_nthreads(
     batches_count::Int,
     simd::SimdFlag = default_simd,
 )::Nothing
+    @assert batches_count <= nthreads()
+
     @threads for batch_index = 1:batches_count
         s_foreach(
             step,
@@ -225,6 +227,7 @@ function t_foreach_up_to_nthreads(
             simd = simd,
         )
     end
+
     return nothing
 end
 
@@ -236,6 +239,8 @@ function t_foreach_more_than_threads(
     batches_count::Int,
     simd::SimdFlag = default_simd,
 )::Nothing
+    @assert batches_count > nthreads()
+
     next_batch_index = Atomic{Int}(nthreads() + 1)
     @threads for batch_index = 1:nthreads()
         while batch_index <= batches_count
@@ -248,6 +253,7 @@ function t_foreach_more_than_threads(
             batch_index = atomic_add!(next_batch_index, 1)
         end
     end
+
     return nothing
 end
 
@@ -324,6 +330,8 @@ function t_collect_up_to_nthreads(
     batches_count::Int,
     simd::SimdFlag,
 )::Nothing
+    @assert batches_count <= nthreads()
+
     @threads for batch_index = 1:batches_count
         s_collect(
             collect,
@@ -347,6 +355,8 @@ function t_collect_more_than_threads(
     batches_count::Int,
     simd::SimdFlag,
 )::Nothing
+    @assert batches_count > nthreads()
+
     next_batch_index = Atomic{Int}(nthreads() + 1)
     @threads for batch_index = 1:nthreads()
         while batch_index <= batches_count
@@ -389,10 +399,14 @@ function merge_accumulators(collect::Function, resources::ParallelResources)::No
     return nothing
 end
 
-next_process = Atomic{Int}(myid())
+next_worker = Atomic{Int}(myid())
 
-function next_process!()::Int
-    return 1 + mod(atomic_add!(next_process, 1), nprocs())
+function next_worker!()::Int
+    worker_id = 1 + mod(atomic_add!(next_worker, 1), nprocs())
+    while worker_id == myid()
+        worker_id = 1 + mod(atomic_add!(next_worker, 1), nprocs())
+    end
+    return worker_id
 end
 
 """
@@ -441,26 +455,19 @@ function d_foreach_up_to_nprocs(
     batches_count::Int,
     simd::SimdFlag,
 )::Nothing
+    @assert batches_count <= nprocs()
+
     @sync begin
-        batch_index = 1
-        while batch_index < batches_count
-            process_id = next_process!()
-            process_id != myid() || continue
-            @spawnat process_id s_foreach(
+        for batch_index = 2:batches_count
+            @spawnat next_worker!() s_foreach(
                 step,
                 resources,
                 batch_values_view(values, batch_size, batch_index),
                 simd = simd,
             )
-            batch_index += 1
         end
 
-        s_foreach(
-            step,
-            resources,
-            batch_values_view(values, batch_size, batch_index),
-            simd = simd,
-        )
+        s_foreach(step, resources, batch_values_view(values, batch_size, 1), simd = simd)
     end
 
     return nothing
@@ -474,25 +481,42 @@ function d_foreach_more_than_nprocs(
     batches_count::Int,
     simd::SimdFlag,
 )::Nothing
-    jobs_channel = RemoteChannel(() -> Channel{Any}(batches_count * 2))
+    @assert batches_count > nprocs()
+
+    jobs_channel = RemoteChannel(() -> Channel{Any}(batches_count + nprocs()))
 
     @sync begin
-        for batch_index = 1:batches_count
-            put!(jobs_channel, batch_values_view(values, batch_size, batch_index))
+        send_jobs_batches(jobs_channel, values, batch_size, 1, nworkers())
+
+        for worker_id in workers()
+            @spawnat worker_id run_jobs_batches(jobs_channel, step, resources, simd)
         end
 
-        for _batch_index = 1:batches_count
-            put!(jobs_channel, nothing)
-        end
-
-        for process_id in workers()
-            @spawnat process_id run_jobs_batches(jobs_channel, step, resources, simd)
-        end
+        send_jobs_batches(jobs_channel, values, batch_size, nprocs(), batches_count)
+        send_jobs_terminations(jobs_channel)
 
         run_jobs_batches(jobs_channel, step, resources, simd)
     end
 
     return nothing
+end
+
+function send_jobs_batches(
+    jobs_channel::RemoteChannel{Channel{Any}},
+    values,
+    batch_size::Number,
+    first_batch_index::Int,
+    last_batch_index::Int,
+)::Nothing
+    for batch_index = first_batch_index:last_batch_index
+        put!(jobs_channel, batch_values_view(values, batch_size, batch_index))
+    end
+end
+
+function send_jobs_terminations(jobs_channel::RemoteChannel{Channel{Any}})::Nothing
+    for process_id = 1:nprocs()
+        put!(jobs_channel, nothing)
+    end
 end
 
 function run_jobs_batches(
