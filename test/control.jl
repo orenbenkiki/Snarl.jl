@@ -204,8 +204,7 @@ function check_steps_used_single_process()::Nothing
 end
 
 function check_steps_used_threads_of_single_process(expected_used_threads::Int)::Nothing
-    used_threads = Array{Bool,1}(undef, nthreads())
-    fill!(used_threads, false)
+    used_threads = zeros(Bool, nthreads())
 
     check_steps_used_single_process()
 
@@ -222,8 +221,7 @@ function check_steps_used_threads_of_single_process(expected_used_threads::Int):
 end
 
 function check_step_used_different_uniques()::Nothing
-    used_uniques = Array{Bool,1}(undef, used(unique_counter))
-    fill!(used_uniques, false)
+    used_uniques = zeros(Bool, used(unique_counter))
     for step_index = 1:steps_count
         unique = trackers.run_step.unique[step_index]
         @test !used_uniques[unique]
@@ -326,8 +324,7 @@ end
 function check_used_single_thread_of_processes(
     expected_used_processes::Int = nproc(),
 )::Nothing
-    thread_of_processes = Array{Int,1}(undef, nprocs())
-    fill!(thread_of_processes, 0)
+    thread_of_processes = zeros(Int, nprocs())
     used_processes = 0
 
     for step = 1:steps_count
@@ -349,8 +346,7 @@ function check_used_single_thread_of_processes(
 end
 
 function check_step_used_different_uniques()::Nothing
-    used_uniques = Array{Bool,1}(undef, used(unique_counter))
-    fill!(used_uniques, false)
+    used_uniques = zeros(Bool, used(unique_counter))
     for step_index = 1:steps_count
         unique = trackers.run_step.unique[step_index]
         @test !used_uniques[unique]

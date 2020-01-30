@@ -17,6 +17,7 @@ export t_foreach
 export t_collect
 export d_foreach
 export d_collect
+export dt_foreach
 
 """
 The `@simd` directive to use for an inner loop.
@@ -255,12 +256,6 @@ function t_foreach_more_than_threads(
     end
 
     return nothing
-end
-
-function make_status_of_threads()::Array{Int,1}
-    status_of_threads = Array{Symbol,1}(undef, nthreads())
-    fill!(status_of_threads, :empty)
-    return status_of_threads
 end
 
 """
