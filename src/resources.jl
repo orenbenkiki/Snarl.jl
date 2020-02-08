@@ -76,10 +76,10 @@ mutable struct GlobalResource
         clear::Union{Function,Nothing} = nothing,
         value = nothing,
     )::GlobalResource
-        if value == nothing
-            @assert make != nothing "Resource is missing both a make function and an initial value"
+        if value == nothing  # Only seems untested
+            @assert make != nothing "Resource is missing both a make function and an initial value"  # Only seems untested
         else
-            @assert make == nothing "Resource specifies both a make function and an initial value"
+            @assert make == nothing "Resource specifies both a make function and an initial value"  # Only seems untested
         end
         return new(make, clear, value, Semaphore(1))
     end
@@ -435,9 +435,11 @@ function clear!(resources::ParallelResources)::Nothing
     clear!(resources.per_process)  # Not tested
     clear!(resources.per_thread)  # Not tested
     clear!(resources.per_step)  # Not tested
+
     resources.per_process = Dict{String,Any}()  # Not tested
     resources.per_thread = Dict{String,Any}()  # Not tested
     resources.per_step = Dict{String,Any}()  # Not tested
+
     return nothing  # Not tested
 end
 

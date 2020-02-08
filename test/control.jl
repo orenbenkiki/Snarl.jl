@@ -1,59 +1,47 @@
 @everywhere using SharedArrays
-@everywhere using Snarl.Resources
 @everywhere using Snarl.Control
+@everywhere using Snarl.Launched
+@everywhere using Snarl.Resources
 
 const steps_count = 100
 
-mutable struct DistributedCounter
-    next::Atomic{Int}
-    DistributedCounter() = new(Atomic{Int}(1))
+@everywhere const UNIQUE = 1
+@everywhere const ACCUMULATOR = 2
+@everywhere const MERGE = 3
+const COUNTERS = 3
+
+used_counters = zeros(Int, COUNTERS)
+
+function make_counters_channel()::Channel{Tuple{Int,RemoteChannel{Channel{Int}}}}
+    return Channel{Tuple{Int,RemoteChannel{Channel{Int}}}}(nprocs() * nthreads())
 end
 
-function clear!(counter::DistributedCounter)::Nothing
-    counter.next[] = 1
-    return nothing
+@send_everywhere counters_channel RemoteChannel(make_counters_channel)
+
+function serve_counters()::Nothing
+    while true
+        request = take!(counters_channel)
+
+        counter = request[1]
+        response_channel = request[2]
+
+        used_counters[counter] += 1
+        put!(response_channel, used_counters[counter])
+    end
+
+    error("Never happens")  # Not tested
 end
 
-function next!(counter::DistributedCounter)::Int
-    return atomic_add!(counter.next, 1)
-end
+remote_do(serve_counters, 1)
 
-function used(counter::DistributedCounter)::Int
-    return counter.next[] - 1
-end
-
-unique_counter = DistributedCounter()
-accumulator_counter = DistributedCounter()
-merge_counter = DistributedCounter()
-
-function main_next_unique!()::Int
-    return next!(unique_counter)
-end
-
-function main_next_accumulator!()::Int
-    return next!(accumulator_counter)
-end
-
-function main_next_merge!()::Int
-    return next!(merge_counter)
-end
-
-@everywhere function next_unique!()::Int
-    return @fetchfrom 1 main_next_unique!()
-end
-
-@everywhere function next_accumulator!()::Int
-    return @fetchfrom 1 main_next_accumulator!()
-end
-
-@everywhere function next_merge!()::Int
-    return @fetchfrom 1 main_next_merge!()
+@everywhere function next!(counter::Int)::Int
+    response_channel = RemoteChannel(() -> Channel{Int}(1))
+    put!(counters_channel, (counter, response_channel))
+    return take!(response_channel)
 end
 
 function reset_counters!()::Nothing
-    clear!(unique_counter)
-    clear!(accumulator_counter)
-    clear!(merge_counter)
+    fill!(used_counters, 0)
     return nothing
 end
 
@@ -62,7 +50,7 @@ end
     thread::Int
     unique::Int
     resets::Int
-    OperationContext() = new(myid(), threadid(), next_unique!(), 0)
+    OperationContext() = new(myid(), threadid(), next!(UNIQUE), 0)
 end
 
 @everywhere function increment_resets!(context::OperationContext)::Nothing
@@ -221,7 +209,7 @@ function check_steps_used_threads_of_single_process(expected_used_threads::Int):
 end
 
 function check_step_used_different_uniques()::Nothing
-    used_uniques = zeros(Bool, used(unique_counter))
+    used_uniques = zeros(Bool, used_counters[UNIQUE])
     for step_index = 1:steps_count
         unique = trackers.run_step.unique[step_index]
         @test !used_uniques[unique]
@@ -316,7 +304,9 @@ function check_used_single_thread_of_processes(
     for step = 1:steps_count
         process = trackers.run_step.process[step]
         thread = trackers.run_step.thread[step]
+        @test trackers.per_thread.process[step] == process
         @test trackers.per_thread.thread[step] == thread
+        @test trackers.per_step.process[step] == process
         @test trackers.per_step.thread[step] == thread
         if thread_of_processes[process] == 0
             thread_of_processes[process] = thread
@@ -332,7 +322,7 @@ function check_used_single_thread_of_processes(
 end
 
 function check_step_used_different_uniques()::Nothing
-    used_uniques = zeros(Bool, used(unique_counter))
+    used_uniques = zeros(Bool, used_counters[UNIQUE])
     for step_index = 1:steps_count
         unique = trackers.run_step.unique[step_index]
         @test !used_uniques[unique]
@@ -376,11 +366,113 @@ end
     end
 end
 
+function check_used_all_threads_of_processes(
+    expected_used_processes::Int,
+    expected_used_threads::Int,
+)::Nothing
+    used_processes = zeros(Bool, nprocs())
+    used_threads_of_processes = zeros(Bool, (nprocs(), nthreads()))
+
+    for step = 1:steps_count
+        process = trackers.run_step.process[step]
+        thread = trackers.run_step.thread[step]
+        @test trackers.per_thread.process[step] == process
+        @test trackers.per_thread.thread[step] == thread
+        @test trackers.per_step.process[step] == process
+        @test trackers.per_step.thread[step] == thread
+        used_processes[process] = true
+        used_threads_of_processes[process, thread] = true
+    end
+
+    @test sum(used_processes) == expected_used_processes
+    @test sum(used_threads_of_processes) == expected_used_threads
+
+    return nothing
+end
+
+function check_dt_foreach(;
+    expected_used_processes::Int = nprocs(),
+    expected_used_threads::Int = nprocs() * nthreads() - 1,
+    flags...,
+)::Nothing
+    reset_test!()
+    run_foreach(dt_foreach; flags...)
+    check_steps_did_run()
+    check_used_all_threads_of_processes(expected_used_processes, expected_used_threads)
+    check_step_used_different_uniques()
+    return nothing
+end
+
+@testset "dt_foreach" begin
+    @testset "invalid" begin
+        @test_throws ArgumentError dt_foreach(
+            track_step,
+            foreach_resources(),
+            1:1,
+            prefer = :invalid,
+        )
+    end
+
+    @testset "default" begin
+        check_dt_foreach()
+    end
+
+    @testset "minimal_batch" begin
+        @testset "all" begin
+            check_dt_foreach(
+                expected_used_processes = 1,
+                expected_used_threads = 1,
+                minimal_batch = typemax(Int),
+            )
+        end
+
+        @testset "many" begin
+            @testset "threads" begin
+                check_dt_foreach(
+                    expected_used_processes = 1,
+                    expected_used_threads = nthreads(),
+                    minimal_batch = ceil(Int, steps_count / nthreads()),
+                    prefer = :threads,
+                )
+            end
+
+            @testset "distributed" begin
+                check_dt_foreach(
+                    expected_used_processes = nprocs(),
+                    expected_used_threads = nprocs(),
+                    minimal_batch = ceil(Int, steps_count / nprocs()),
+                    prefer = :distributed,
+                )
+            end
+        end
+
+        @testset "half" begin
+            @testset "threads" begin
+                check_dt_foreach(
+                    expected_used_processes = 2,
+                    expected_used_threads = 2 * nthreads() - 1,
+                    minimal_batch = ceil(Int, steps_count / (2 * nthreads())),
+                    prefer = :threads,
+                )
+            end
+
+            @testset "distributed" begin
+                check_dt_foreach(
+                    expected_used_processes = nprocs(),
+                    expected_used_threads = nprocs() * 2,
+                    minimal_batch = ceil(Int, steps_count / (2 * nprocs())),
+                    prefer = :distributed,
+                )
+            end
+        end
+    end
+end
+
 mutable struct Accumulator
     count::Int
     sum::Int
     unique::Int
-    Accumulator() = new(0, 0, next_accumulator!())
+    Accumulator() = new(0, 0, next!(ACCUMULATOR))
 end
 
 function track_make_accumulator()::Accumulator
@@ -400,7 +492,7 @@ function track_collect(
     into_accumulator::Accumulator,
     from_accumulator::Accumulator,
 )::Nothing
-    track_context(trackers.run_merge_accumulators, next_merge!(), OperationContext())
+    track_context(trackers.run_merge_accumulators, next!(MERGE), OperationContext())
     into_accumulator.count += from_accumulator.count
     into_accumulator.sum += from_accumulator.sum
     return nothing

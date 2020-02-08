@@ -62,7 +62,5 @@ function affinity() end
     end
 
     @test !depth_switched[1]
-    for depth = 2:MAX_DEPTH
-        @test depth_switched[depth]
-    end
+    @test any(depth_switched[2:MAX_DEPTH])
 end

@@ -10,6 +10,8 @@ export @send_everywhere
 export launched
 export threads_count_of_processes
 export total_threads_count
+export prefix
+export print_ln
 
 function run_everywhere(body::Function)::Nothing
     @sync begin
@@ -84,6 +86,30 @@ function launched()::Nothing
     end
 
     return nothing
+end
+
+"""
+    prefix()
+
+A prefix for uniform `println` formatting. This adds `From worker 1:` when invoked in the main
+process, and also adds a `In thread <threadid>:` so that message sources are clearly and uniformly
+identified.
+"""
+function prefix()::String
+    if myid() == 1  # Not tested
+        return "      From worker 1:    In thread $(threadid()):    "  # Not tested
+    else
+        return "In thread $(threadid()):    "  # Not tested
+    end
+end
+
+"""
+    print_ln(text::String)
+
+Print a line to standard output, with a `prefix`, and `flush`.
+"""
+function print_ln(text::String)::Nothing
+    println("$(prefix()) $(text)")  # Not tested
 end
 
 end # module

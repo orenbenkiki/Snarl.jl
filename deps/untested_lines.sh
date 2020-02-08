@@ -42,10 +42,10 @@ grep -n '.' */*.cov \
         state = 0
         OFS = "`"
     }
-    $4 ~ /^function / { state = 1 }
+    $4 ~ /^\s*function / { state = 1 }
     state == 1 && $4 ~ /)::/ { state = 2 }
     state > 0 && $3 ~ /[0-9]/ { state = 0 }
-    state == 3 && $3 == "-" && $4 !~ /^\s*([)]|begin|end|else|try|finally)/ { $3 = "0" }
+    state == 3 && $3 == "-" && $4 !~ /^\s*([)]|begin|end|else|try|finally|$)/ { $3 = "0" }
     state == 2 { state = 3 }
     $3 != "-" { print }
     state == 3 && $4 ~ /^end/ { state = 0 }
