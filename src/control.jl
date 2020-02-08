@@ -33,6 +33,12 @@ is expected to be done using the appropriate `ParallelResources`.
 const default_simd = :ivdep
 
 """
+The default minimal number of iterations in a batch.
+
+"""
+const default_minimal_batch_size = 1
+
+"""
 The default number of batches to run in each thread.
 
 Scheduling is done in equal-size batches where on average each thread will execute `batch_factor`
@@ -68,12 +74,12 @@ function s_foreach(
 
     elseif simd == true
         @simd for value in values
-            step(resources, value)  # Only seems unreached
+            step(resources, value)
         end
 
     elseif simd == false
         for value in values  # Foo
-            step(resources, value)  # Only seems unreached
+            step(resources, value)
         end
 
     else
@@ -135,7 +141,7 @@ function batches_values_view(
     last_step_index = round(Int, last_batch_index * batch_size)
     @assert 1 <= first_step_index &&
             first_step_index <= last_step_index && last_step_index <= length(values)
-    return @views values[first_step_index:last_step_index]
+    return @views @inbounds values[first_step_index:last_step_index]
 end
 
 function batches_data(
@@ -158,7 +164,7 @@ function batches_data(
     batches_count = runners_count * batch_factor
     batch_size = length(values) / batches_count
     if batch_size < minimal_batch
-        batch_size = minimal_batch
+        batch_size = minimal_batch  # Only seems unreached
         batches_count = round(Int, length(values) / minimal_batch)
     end
 
@@ -190,7 +196,7 @@ function t_foreach(
     simd::SimdFlag = default_simd,
 )::Nothing
     batches_count, batch_size =
-        batches_data(step, resources, values, batch_factor, minimal_batch, simd, nthreads())
+        batches_data(step, resources, values, batch_factor, minimal_batch, simd, nthreads())  # Only seems unreached
 
     if batches_count <= 1
         s_foreach(step, resources, values, simd = simd)
@@ -312,7 +318,7 @@ function t_collect(
 
     pending_threads = get_per_process(resources, "_pending_threads")
     @assert length(pending_threads) == 1
-    @assert pending_threads[1] == 1
+    @assert @inbounds pending_threads[1] == 1
     return get_per_thread(resources, "accumulator", 1)
 end
 
@@ -484,13 +490,13 @@ function d_foreach_more_than_nprocs(
         send_jobs_batches(jobs_channel, values, batch_size, 1, nworkers())
 
         for worker_id in workers()
-            @spawnat worker_id run_jobs_batches(jobs_channel, step, resources, simd)
+            @spawnat worker_id run_jobs_channel_batches(jobs_channel, step, resources, simd)
         end
 
         send_jobs_batches(jobs_channel, values, batch_size, nprocs(), batches_count)
-        send_jobs_terminations(jobs_channel)
+        send_jobs_terminations(jobs_channel, nprocs())
 
-        run_jobs_batches(jobs_channel, step, resources, simd)
+        run_jobs_channel_batches(jobs_channel, step, resources, simd)
     end
 
     return nothing
@@ -508,13 +514,16 @@ function send_jobs_batches(
     end
 end
 
-function send_jobs_terminations(jobs_channel::RemoteChannel{Channel{Any}})::Nothing
-    for process_id = 1:nprocs()
+function send_jobs_terminations(
+    jobs_channel::RemoteChannel{Channel{Any}},
+    cancellations_count::Int,
+)::Nothing
+    for process_id = 1:cancellations_count
         put!(jobs_channel, nothing)
     end
 end
 
-function run_jobs_batches(
+function run_jobs_channel_batches(
     jobs_channel::RemoteChannel{Channel{Any}},
     step::Function,
     resources::ParallelResources,

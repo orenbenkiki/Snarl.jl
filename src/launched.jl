@@ -64,9 +64,9 @@ function launched()::Nothing
 
     values = Array{Int,1}(undef, nprocs())
 
-    values[1] = nthreads()
+    @inbounds values[1] = nthreads()
     for worker = 2:nprocs()
-        values[worker] = fetch(@spawnat worker Base.Threads.nthreads())
+        @inbounds values[worker] = fetch(@spawnat worker Base.Threads.nthreads())
     end
 
     global threads_count_of_processes

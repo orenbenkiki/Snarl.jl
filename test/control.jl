@@ -242,20 +242,6 @@ function run_foreach(foreach::Function; flags...)::Nothing
     return nothing
 end
 
-function check_used_single_thread_of_single_process()::Nothing
-    thread = trackers.per_thread.thread[1]
-    @test thread > 0
-
-    check_steps_used_single_process()
-
-    check_same_values(trackers.per_process.thread, thread)
-    check_same_values(trackers.per_thread.thread, thread)
-    check_same_values(trackers.per_step.thread, thread)
-    check_same_values(trackers.run_step.thread, thread)
-
-    return nothing
-end
-
 function check_s_foreach(; flags...)::Nothing
     reset_test!()
     run_foreach(s_foreach; flags...)

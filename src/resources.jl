@@ -132,27 +132,27 @@ end
 """
 Clear the value of a global resource.
 
-At minimum, this will allow the value top be garbage collected.
+At minimum, this will allow the value to be garbage collected.
 If a `clear` function was registered, it can perform additional cleanup (such as closing files).
 
 This is never invoked implicitly. It is only done if explicitly invoked. That is, this
 is not a "destructor".
 """
 function clear!(resource::GlobalResource)::Nothing
-    if resource.value != nothing
-        Base.acquire(resource.semaphore)
+    if resource.value != nothing  # Not tested
+        Base.acquire(resource.semaphore)  # Not tested
         try
-            if resource.value != nothing
-                if resource.clear != nothing
-                    resource.clear(resource.value)
+            if resource.value != nothing  # Not tested
+                if resource.clear != nothing  # Not tested
+                    resource.clear(resource.value)  # Not tested
                 end
-                resource.value = nothing
+                resource.value = nothing  # Not tested
             end
         finally
-            Base.release(resource.semaphore)
+            Base.release(resource.semaphore)  # Not tested
         end
     end
-    return nothing
+    return nothing  # Not tested
 end
 
 """
@@ -219,11 +219,11 @@ Get the value of a local resource for the specified thread (by default, the curr
 This will create the value if necessary using the registered `make` function.
 """
 function get_value(resource::LocalResource, thread_id = Threads.threadid())::Any
-    value = resource.values[thread_id]
+    value = @inbounds resource.values[thread_id]
     if value == nothing
         @assert resource.make != nothing "Getting missing resource without a make function"
         value = resource.make()
-        resource.values[thread_id] = value
+        @inbounds resource.values[thread_id] = value
     end
     if resource.reset != nothing
         resource.reset(value)
@@ -241,15 +241,15 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 is not a "destructor".
 """
 function clear!(resource::LocalResource)::Nothing
-    if resource.clear != nothing
-        for value in resource.values
-            if value != nothing
-                resource.clear(value)
+    if resource.clear != nothing  # Not tested
+        for value in resource.values  # Not tested
+            if value != nothing  # Not tested
+                resource.clear(value)  # Not tested
             end
         end
     end
-    resource.values[:] = nothing
-    return nothing
+    resource.values[:] = nothing  # Not tested
+    return nothing  # Not tested
 end
 
 """
@@ -330,7 +330,8 @@ function add_per_thread!(
 end
 
 """
-    add_per_step!(resources::ParallelResources, name::String, make::Function, reset::Function; [clear::Function])
+    add_per_step!(resources::ParallelResources, name::String, make::Function, reset::Function;
+                  [clear::Function])
 
 Add a new per-step resource to the container under the specified `name`.
 """
@@ -352,7 +353,7 @@ Obtain a semaphore for coordinating access to a per-process resource value betwe
 the process.
 """
 function get_semaphore(resources::ParallelResources, name::String)::Semaphore
-    return resources.per_process[name].semaphore
+    return resources.per_process[name].semaphore  # Not tested
 end
 
 """
@@ -431,13 +432,13 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 is not a "destructor".
 """
 function clear!(resources::ParallelResources)::Nothing
-    clear!(resources.per_process)
-    clear!(resources.per_thread)
-    clear!(resources.per_step)
-    resources.per_process = Dict{String,Any}()
-    resources.per_thread = Dict{String,Any}()
-    resources.per_step = Dict{String,Any}()
-    return nothing
+    clear!(resources.per_process)  # Not tested
+    clear!(resources.per_thread)  # Not tested
+    clear!(resources.per_step)  # Not tested
+    resources.per_process = Dict{String,Any}()  # Not tested
+    resources.per_thread = Dict{String,Any}()  # Not tested
+    resources.per_step = Dict{String,Any}()  # Not tested
+    return nothing  # Not tested
 end
 
 end # module

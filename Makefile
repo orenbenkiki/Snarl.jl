@@ -1,5 +1,5 @@
 .PHONY: check
-check: unreached_lines
+check: untested_lines
 
 .PHONY: ci_build
 ci_build: format unindexed_files check
@@ -32,12 +32,12 @@ tracefile.info: *.toml src/*.jl test/*.toml test/*.jl
 line_coverage: tracefile.info
 	deps/line_coverage.sh
 
-.PHONY: unreached_lines
-unreached_lines: tracefile.info
-	deps/unreached_lines.sh
+.PHONY: untested_lines
+untested_lines: tracefile.info
+	deps/untested_lines.sh
 
 .PHONY: coverage
-coverage: unreached_lines line_coverage
+coverage: untested_lines line_coverage
 
 .PHONY: clean
 clean:
