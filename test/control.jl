@@ -114,11 +114,9 @@ function new_trackers()::Trackers
         new_context_trackers(),
         new_context_trackers(),
         new_context_trackers(),
-
         new_context_trackers(),
         new_context_trackers(),
         new_context_trackers(),
-
         new_tracking_array(),
     )
 end
@@ -535,8 +533,8 @@ function run_collect(collect::Function; flags...)::Nothing
         tracked_step,
         collect_resources(),
         1:steps_count;
-        into="result",
-        flags...
+        into = "result",
+        flags...,
     )
     @test accumulated.count == steps_count
     @test accumulated.sum == round(Int, steps_count * (steps_count + 1) / 2)
@@ -545,7 +543,7 @@ end
 
 function check_s_collect(; flags...)::Nothing
     reset_test!()
-    run_collect(s_collect; into="result", flags...)
+    run_collect(s_collect; into = "result", flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(1)
     check_step_used_different_uniques()
@@ -562,7 +560,7 @@ end
 
 function check_t_collect(; expected_used_threads = nthreads(), flags...)::Nothing
     reset_test!()
-    run_collect(t_collect; into="result", flags...)
+    run_collect(t_collect; into = "result", flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(expected_used_threads)
     check_step_used_different_uniques()

@@ -123,7 +123,7 @@ function s_collect(
     step::Function,
     storage::ParallelStorage,
     values;
-    into::AbstractString="accumulator",
+    into::AbstractString = "accumulator",
     simd::SimdFlag = default_simd,
 )::Any
     accumulator = get_per_thread(storage, into)
@@ -148,10 +148,10 @@ function batch_values_views(
     values,
     batch_size::Number,
     first_batch_index::Int,
-    batches_count::Int
+    batches_count::Int,
 )::Array{Any,1}
     views = Array{Any,1}(undef, batches_count)
-    for index in 1:batches_count
+    for index = 1:batches_count
         views[index] = batch_values_view(values, batch_size, first_batch_index + index - 1)
     end
     return views
@@ -211,7 +211,7 @@ function t_foreach(
         batch_factor,
         minimal_batch,
         simd,
-        nthreads()
+        nthreads(),
     )
 
     if batches_count <= 1
@@ -219,14 +219,7 @@ function t_foreach(
     elseif batches_count <= nthreads()
         t_foreach_up_to_nthreads(step, storage, values, batch_size, batches_count, simd)
     else
-        t_foreach_more_than_nthreads(
-            step,
-            storage,
-            values,
-            batch_size,
-            batches_count,
-            simd,
-        )
+        t_foreach_more_than_nthreads(step, storage, values, batch_size, batches_count, simd)
     end
 
     return nothing
@@ -300,7 +293,7 @@ function t_collect(
     step::Function,
     storage::ParallelStorage,
     values;
-    into::AbstractString="accumulator",
+    into::AbstractString = "accumulator",
     batch_factor::Int = default_batch_factor,
     minimal_batch::Int = 1,
     simd::SimdFlag = default_simd,
@@ -312,7 +305,7 @@ function t_collect(
         batch_factor,
         minimal_batch,
         simd,
-        nthreads()
+        nthreads(),
     )
 
     if batches_count <= 1
@@ -475,7 +468,7 @@ function d_foreach(
         batch_factor,
         minimal_batch,
         simd,
-        nprocs()
+        nprocs(),
     )
 
     if batches_count <= 1
@@ -535,12 +528,18 @@ function d_foreach_more_than_nprocs(
                 step,
                 storage,
                 batch_values_view(values, batch_size, next_batch_index),
-                simd
+                simd,
             )
             next_batch_index += 1
         end
 
-        send_jobs_batches(jobs_channel, values, batch_size, next_batch_index + 1, batches_count)
+        send_jobs_batches(
+            jobs_channel,
+            values,
+            batch_size,
+            next_batch_index + 1,
+            batches_count,
+        )
         send_jobs_terminations(jobs_channel, nprocs())
 
         s_run_batches_from_jobs_channel(
@@ -548,7 +547,7 @@ function d_foreach_more_than_nprocs(
             step,
             storage,
             batch_values_view(values, batch_size, next_batch_index),
-            simd
+            simd,
         )
     end
 
@@ -653,7 +652,14 @@ function dt_foreach(
     if batches_count <= 1
         s_foreach(step, storage, values, simd = simd)
     elseif prefer == :distributed || batches_count > total_threads_count
-        dt_foreach_prefer_distributed(step, storage, values, batch_size, batches_count, simd)
+        dt_foreach_prefer_distributed(
+            step,
+            storage,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+        )
     elseif batches_count <= nthreads()
         t_foreach_up_to_nthreads(step, storage, values, batch_size, batches_count, simd)
     else
@@ -686,7 +692,12 @@ function dt_foreach_prefer_distributed(
                 used_threads_of_process,
                 step,
                 storage,
-                batch_values_views(values, batch_size, next_batch_index, used_threads_of_process),
+                batch_values_views(
+                    values,
+                    batch_size,
+                    next_batch_index,
+                    used_threads_of_process,
+                ),
                 simd,
             )
             next_batch_index += used_threads_of_process
@@ -710,7 +721,7 @@ function dt_foreach_prefer_distributed(
                 step,
                 storage,
                 batch_values_view(values, batch_size, next_batch_index + index - 1),
-                simd
+                simd,
             )
         end
     end
@@ -766,7 +777,10 @@ function dt_foreach_prefer_threads(
             used_processes[worker_id] && continue
             used_processes[worker_id] = true
 
-            threads_count = min(remaining_batches_count, @inbounds threads_count_of_processes[worker_id])
+            threads_count = @inbounds min(
+                remaining_batches_count,
+                threads_count_of_processes[worker_id],
+            )
             threads_count > 0 || continue
 
             @spawnat worker_id t_run_batches(
@@ -816,7 +830,13 @@ function t_run_batches_from_jobs_channel(
 )::Nothing
     @assert length(batch_values) == threads_count
     @sync @threads for index = 1:threads_count
-        s_run_batches_from_jobs_channel(jobs_channel, step, storage, batch_values[index], simd)
+        s_run_batches_from_jobs_channel(
+            jobs_channel,
+            step,
+            storage,
+            batch_values[index],
+            simd,
+        )
     end
 
     return nothing
