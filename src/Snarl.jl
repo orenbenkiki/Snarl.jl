@@ -5,7 +5,7 @@ module Snarl
 
 include("launcher.jl")
 include("launched.jl")
-include("resources.jl")
+include("storage.jl")
 include("control.jl")
 
 end # module

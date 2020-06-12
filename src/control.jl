@@ -7,7 +7,7 @@ using Base.Threads
 using Distributed
 
 using ..Launched
-using ..Resources
+using ..Storage
 
 export SimdFlag
 export default_batch_factor
@@ -33,7 +33,7 @@ const SimdFlag = Union{Bool,Symbol,Val{true},Val{false},Val{:ivdep}}
 The default `@simd` directive to apply to the inner loops.
 
 This is `:ivdep` because the code here assumes all steps are entirely independent. Any
-coordination is expected to be done using the appropriate `ParallelResources`.
+coordination is expected to be done using the appropriate `ParallelStorage`.
 """
 const default_simd = :ivdep
 
@@ -54,37 +54,37 @@ scheduling overhead. The default is `4` which is assumed to be a reasonable comp
 const default_batch_factor = 4
 
 """
-    s_foreach(step::Function, resources::ParallelResources, values::collection;
+    s_foreach(step::Function, storage::ParallelStorage, values::collection;
               simd::SimdFlag=default_simd)
 
 Perform `step` for each `value` in `values`, serially, using the current thread in the current
 process.
 
 This is implemented as a simple loop using the specified `simd`, which repeatedly invoked
-`step(resources, value)`. The return value of `step` is discarded.
+`step(storage, value)`. The return value of `step` is discarded.
 
 Having this makes it easier to convert a parallel loop to a serial one, for example for comparing
 parallel and serial performance.
 """
 function s_foreach(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values;
     simd::SimdFlag = default_simd,
 )::Nothing
     if simd == :ivdep
         @simd ivdep for value in values
-            step(resources, value)
+            step(storage, value)
         end
 
     elseif simd == true
         @simd for value in values
-            step(resources, value)
+            step(storage, value)
         end
 
     elseif simd == false
         for value in values
-            step(resources, value)
+            step(storage, value)
         end
 
     else
@@ -97,15 +97,15 @@ function s_foreach(
 end
 
 """
-    s_collect(collect::Function, step::Function, resources::ParallelResources, values::collection;
-              simd::SimdFlag=default_simd)
+    s_collect(collect::Function, step::Function, storage::ParallelStorage, values::collection;
+              into::AbstractString="accumulator", simd::SimdFlag=default_simd)
 
 Perform `step` for each `value` in `values`, serially, using the current thread in the current
 process; `collect` the returned results into a single accumulator and return it.
 
 This is implemented as a simple loop using the specified `simd`, which repeatedly invokes
-`step(resources, value)`. The `collect(accumulator, step_result)` is likewise repeatedly invoked to
-accumulate the step results into a single per-thread resource named `accumulator`. The return value
+`step(storage, value)`. The `collect(accumulator, step_result)` is likewise repeatedly invoked to
+accumulate the step results into a single per-thread value named (by default, `accumulator`). The return value
 of `collect` is ignored.
 
 !!! note
@@ -121,14 +121,15 @@ comparing parallel and serial performance.
 function s_collect(
     collect::Function,
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values;
+    into::AbstractString="accumulator",
     simd::SimdFlag = default_simd,
 )::Any
-    accumulator = get_per_thread(resources, "accumulator")
+    accumulator = get_per_thread(storage, into)
 
-    s_foreach(resources, values, simd = simd) do resources, value
-        collect(accumulator, step(resources, value))
+    s_foreach(storage, values, simd = simd) do storage, value
+        collect(accumulator, step(storage, value))
     end
 
     return accumulator
@@ -158,7 +159,7 @@ end
 
 function batches_configuration(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_factor::Int,
     minimal_batch::Int,
@@ -184,7 +185,7 @@ function batches_configuration(
 end
 
 """
-    t_foreach(step::Function, resources::ParallelResources, values::collection;
+    t_foreach(step::Function, storage::ParallelStorage, values::collection;
               batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
 
 Perform a step for each value in the collection, in parallel, using multiple threads in the current
@@ -197,7 +198,7 @@ Each batch is executed as an inner loop using `s_foreach` with the specified `si
 """
 function t_foreach(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values;
     batch_factor::Int = default_batch_factor,
     minimal_batch::Int = 1,
@@ -205,7 +206,7 @@ function t_foreach(
 )::Nothing
     batches_count, batch_size = batches_configuration(
         step,
-        resources,
+        storage,
         values,
         batch_factor,
         minimal_batch,
@@ -214,13 +215,13 @@ function t_foreach(
     )
 
     if batches_count <= 1
-        s_foreach(step, resources, values, simd = simd)
+        s_foreach(step, storage, values, simd = simd)
     elseif batches_count <= nthreads()
-        t_foreach_up_to_nthreads(step, resources, values, batch_size, batches_count, simd)
+        t_foreach_up_to_nthreads(step, storage, values, batch_size, batches_count, simd)
     else
         t_foreach_more_than_nthreads(
             step,
-            resources,
+            storage,
             values,
             batch_size,
             batches_count,
@@ -233,7 +234,7 @@ end
 
 function t_foreach_up_to_nthreads(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_size::Number,
     batches_count::Int,
@@ -244,7 +245,7 @@ function t_foreach_up_to_nthreads(
     @sync @threads for batch_index = 1:batches_count
         s_foreach(
             step,
-            resources,
+            storage,
             batch_values_view(values, batch_size, batch_index),
             simd = simd,
         )
@@ -255,7 +256,7 @@ end
 
 function t_foreach_more_than_nthreads(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_size::Number,
     batches_count::Int,
@@ -268,7 +269,7 @@ function t_foreach_more_than_nthreads(
         while batch_index <= batches_count
             s_foreach(
                 step,
-                resources,
+                storage,
                 batch_values_view(values, batch_size, batch_index),
                 simd = simd,
             )
@@ -280,12 +281,14 @@ function t_foreach_more_than_nthreads(
 end
 
 """
-    t_collect(collect::Function, step::Function, resources::ParallelResources, values::collection;
-              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
+    t_collect(collect::Function, step::Function, storage::ParallelStorage, values::collection;
+              into::AbstractString="accumulator",
+              batch_factor::Int=default_batch_factor,
+              simd::SimdFlag=default_simd)
 
 Perform `step` for each `value` in `values`, serially, using multiple threads in the current
-process; `collect` the returned results into a single accumulator and return it. To manage this,
-a per-process `_pending_threads` resource is added containing a stack (array) of pending thread
+process; `collect` the returned results into a single accumulator and return it. To manage this, a
+per-process `_pending_threads` value is added containing a stack (array) of pending thread
 identifiers (whose results were not collected yet).
 
 This builds on `s_collect` to accumulate results in each thread. The per-thread accumulators are
@@ -295,15 +298,16 @@ The final result is returned.
 function t_collect(
     collect::Function,
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values;
+    into::AbstractString="accumulator",
     batch_factor::Int = default_batch_factor,
     minimal_batch::Int = 1,
     simd::SimdFlag = default_simd,
 )::Any
     batches_count, batch_size = batches_configuration(
         step,
-        resources,
+        storage,
         values,
         batch_factor,
         minimal_batch,
@@ -312,46 +316,49 @@ function t_collect(
     )
 
     if batches_count <= 1
-        return s_collect(collect, step, resources, values, simd = simd)
+        return s_collect(collect, step, storage, values, into = into, simd = simd)
     end
 
-    add_per_process!(resources, "_pending_threads", make = () -> Array{Int,1}(undef, 0))
+    add_per_process!(storage, "_pending_threads", make = () -> Array{Int,1}(undef, 0))
 
     if batches_count <= nthreads()
         t_collect_up_to_nthreads(
             collect,
             step,
-            resources,
+            storage,
             values,
             batch_size,
             batches_count,
+            into,
             simd,
         )
     else
         t_collect_more_than_threads(
             collect,
             step,
-            resources,
+            storage,
             values,
             batch_size,
             batches_count,
+            into,
             simd,
         )
     end
 
-    pending_threads = get_per_process(resources, "_pending_threads")
+    pending_threads = get_per_process(storage, "_pending_threads")
     @assert length(pending_threads) == 1
     @assert @inbounds pending_threads[1] == 1
-    return get_per_thread(resources, "accumulator", 1)
+    return get_per_thread(storage, into, 1)
 end
 
 function t_collect_up_to_nthreads(
     collect::Function,
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_size::Number,
     batches_count::Int,
+    into::AbstractString,
     simd::SimdFlag,
 )::Nothing
     @assert batches_count <= nthreads()
@@ -360,11 +367,12 @@ function t_collect_up_to_nthreads(
         s_collect(
             collect,
             step,
-            resources,
+            storage,
             batch_values_view(values, batch_size, batch_index),
+            into = into,
             simd = simd,
         )
-        collect_thread_accumulator(collect, resources)
+        collect_thread_accumulator(collect, storage, into)
     end
 
     return nothing
@@ -373,10 +381,11 @@ end
 function t_collect_more_than_threads(
     collect::Function,
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_size::Number,
     batches_count::Int,
+    into::AbstractString,
     simd::SimdFlag,
 )::Nothing
     @assert batches_count > nthreads()
@@ -387,23 +396,28 @@ function t_collect_more_than_threads(
             s_collect(
                 collect,
                 step,
-                resources,
+                storage,
                 batch_values_view(values, batch_size, batch_index),
+                into = into,
                 simd = simd,
             )
             batch_index = atomic_add!(next_batch_index, 1)
         end
-        collect_thread_accumulator(collect, resources)
+        collect_thread_accumulator(collect, storage, into)
     end
 
     return nothing
 end
 
-function collect_thread_accumulator(collect::Function, resources::ParallelResources)::Nothing
+function collect_thread_accumulator(
+    collect::Function,
+    storage::ParallelStorage,
+    into::AbstractString,
+)::Nothing
     thread_id = threadid()
     while true
         other_id = 0
-        with_per_process(resources, "_pending_threads") do pending_threads
+        with_per_process(storage, "_pending_threads") do pending_threads
             if length(pending_threads) > 0
                 other_id = pop!(pending_threads)
             else
@@ -415,8 +429,8 @@ function collect_thread_accumulator(collect::Function, resources::ParallelResour
         into_id = min(thread_id, other_id)
         from_id = max(thread_id, other_id)
         collect(
-            get_per_thread(resources, "accumulator", into_id),
-            get_per_thread(resources, "accumulator", from_id),
+            get_per_thread(storage, into, into_id),
+            get_per_thread(storage, into, from_id),
         )
         thread_id = into_id
     end
@@ -435,7 +449,7 @@ function next_worker!()::Int
 end
 
 """
-    d_foreach(step::Function, resources::ParallelResources, values::collection;
+    d_foreach(step::Function, storage::ParallelStorage, values::collection;
               batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
 
 Perform a step for each value in the collection in parallel using a single thread in each of the
@@ -448,7 +462,7 @@ Each batch is executed as an inner loop using `s_foreach` with the specified `si
 """
 function d_foreach(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values;
     batch_factor::Int = default_batch_factor,
     minimal_batch::Int = 1,
@@ -456,7 +470,7 @@ function d_foreach(
 )::Nothing
     batches_count, batch_size = batches_configuration(
         step,
-        resources,
+        storage,
         values,
         batch_factor,
         minimal_batch,
@@ -465,11 +479,11 @@ function d_foreach(
     )
 
     if batches_count <= 1
-        s_foreach(step, resources, values, simd = simd)
+        s_foreach(step, storage, values, simd = simd)
     elseif batches_count <= nprocs()
-        d_foreach_up_to_nprocs(step, resources, values, batch_size, batches_count, simd)
+        d_foreach_up_to_nprocs(step, storage, values, batch_size, batches_count, simd)
     else
-        d_foreach_more_than_nprocs(step, resources, values, batch_size, batches_count, simd)
+        d_foreach_more_than_nprocs(step, storage, values, batch_size, batches_count, simd)
     end
 
     return nothing
@@ -477,7 +491,7 @@ end
 
 function d_foreach_up_to_nprocs(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_size::Number,
     batches_count::Int,
@@ -489,13 +503,13 @@ function d_foreach_up_to_nprocs(
         for batch_index = 2:batches_count
             @spawnat next_worker!() s_foreach(
                 step,
-                resources,
+                storage,
                 batch_values_view(values, batch_size, batch_index),
                 simd = simd,
             )
         end
 
-        s_foreach(step, resources, batch_values_view(values, batch_size, 1), simd = simd)
+        s_foreach(step, storage, batch_values_view(values, batch_size, 1), simd = simd)
     end
 
     return nothing
@@ -503,7 +517,7 @@ end
 
 function d_foreach_more_than_nprocs(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_size::Number,
     batches_count::Int,
@@ -519,7 +533,7 @@ function d_foreach_more_than_nprocs(
             @spawnat worker_id s_run_batches_from_jobs_channel(
                 jobs_channel,
                 step,
-                resources,
+                storage,
                 batch_values_view(values, batch_size, next_batch_index),
                 simd
             )
@@ -532,7 +546,7 @@ function d_foreach_more_than_nprocs(
         s_run_batches_from_jobs_channel(
             jobs_channel,
             step,
-            resources,
+            storage,
             batch_values_view(values, batch_size, next_batch_index),
             simd
         )
@@ -566,12 +580,12 @@ end
 function s_run_batches_from_jobs_channel(
     jobs_channel::RemoteChannel{Channel{Any}},
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     batch_values,
     simd::SimdFlag,
 )::Nothing
     while batch_values != nothing
-        s_foreach(step, resources, batch_values, simd = simd)
+        s_foreach(step, storage, batch_values, simd = simd)
         batch_values = take!(jobs_channel)
     end
 
@@ -599,7 +613,7 @@ function verify_prefer(prefer::PreferFlag)::Nothing
 end
 
 """
-    dt_foreach(step::Function, resources::ParallelResources, values::collection;
+    dt_foreach(step::Function, storage::ParallelStorage, values::collection;
                batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
 
 Perform a step for each value in the collection in parallel using multiple thread in multiple
@@ -617,7 +631,7 @@ Each batch is executed as an inner loop using `s_foreach` with the specified `si
 """
 function dt_foreach(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values;
     batch_factor::Int = default_batch_factor,
     minimal_batch::Int = 1,
@@ -628,7 +642,7 @@ function dt_foreach(
 
     batches_count, batch_size = batches_configuration(
         step,
-        resources,
+        storage,
         values,
         batch_factor,
         minimal_batch,
@@ -637,13 +651,13 @@ function dt_foreach(
     )
 
     if batches_count <= 1
-        s_foreach(step, resources, values, simd = simd)
+        s_foreach(step, storage, values, simd = simd)
     elseif prefer == :distributed || batches_count > total_threads_count
-        dt_foreach_prefer_distributed(step, resources, values, batch_size, batches_count, simd)
+        dt_foreach_prefer_distributed(step, storage, values, batch_size, batches_count, simd)
     elseif batches_count <= nthreads()
-        t_foreach_up_to_nthreads(step, resources, values, batch_size, batches_count, simd)
+        t_foreach_up_to_nthreads(step, storage, values, batch_size, batches_count, simd)
     else
-        dt_foreach_prefer_threads(step, resources, values, batch_size, batches_count, simd)
+        dt_foreach_prefer_threads(step, storage, values, batch_size, batches_count, simd)
     end
 
     return nothing
@@ -651,7 +665,7 @@ end
 
 function dt_foreach_prefer_distributed(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_size::Number,
     batches_count::Int,
@@ -671,7 +685,7 @@ function dt_foreach_prefer_distributed(
                 jobs_channel,
                 used_threads_of_process,
                 step,
-                resources,
+                storage,
                 batch_values_views(values, batch_size, next_batch_index, used_threads_of_process),
                 simd,
             )
@@ -694,7 +708,7 @@ function dt_foreach_prefer_distributed(
             s_run_batches_from_jobs_channel(
                 jobs_channel,
                 step,
-                resources,
+                storage,
                 batch_values_view(values, batch_size, next_batch_index + index - 1),
                 simd
             )
@@ -733,7 +747,7 @@ end
 
 function dt_foreach_prefer_threads(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     values,
     batch_size::Number,
     batches_count::Int,
@@ -757,7 +771,7 @@ function dt_foreach_prefer_threads(
 
             @spawnat worker_id t_run_batches(
                 step,
-                resources,
+                storage,
                 batch_values_views(values, batch_size, next_batch_index, threads_count),
                 simd,
             )
@@ -769,7 +783,7 @@ function dt_foreach_prefer_threads(
 
         t_run_batches(
             step,
-            resources,
+            storage,
             batch_values_views(values, batch_size, next_batch_index, nthreads()),
             simd,
         )
@@ -781,12 +795,12 @@ end
 
 function t_run_batches(
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     batch_values::Any,
     simd::SimdFlag,
 )::Nothing
     @sync @threads for index = 1:length(batch_values)
-        s_foreach(step, resources, batch_values[index], simd = simd)
+        s_foreach(step, storage, batch_values[index], simd = simd)
     end
 
     return nothing
@@ -796,13 +810,13 @@ function t_run_batches_from_jobs_channel(
     jobs_channel::Distributed.RemoteChannel{Channel{Any}},
     threads_count::Int,
     step::Function,
-    resources::ParallelResources,
+    storage::ParallelStorage,
     batch_values::Array{Any,1},
     simd::SimdFlag,
 )::Nothing
     @assert length(batch_values) == threads_count
     @sync @threads for index = 1:threads_count
-        s_run_batches_from_jobs_channel(jobs_channel, step, resources, batch_values[index], simd)
+        s_run_batches_from_jobs_channel(jobs_channel, step, storage, batch_values[index], simd)
     end
 
     return nothing

@@ -1,7 +1,7 @@
 @everywhere using SharedArrays
 @everywhere using Snarl.Control
 @everywhere using Snarl.Launched
-@everywhere using Snarl.Resources
+@everywhere using Snarl.Storage
 
 const steps_count = 100
 
@@ -151,7 +151,7 @@ function reset_test!()::Nothing
     return nothing
 end
 
-@everywhere function tracked_step(resources::ParallelResources, step_index::Int)::Int
+@everywhere function tracked_step(resources::ParallelStorage, step_index::Int)::Int
     # sleep(0.05)
 
     per_step_context = get_per_step(resources, "context")
@@ -217,8 +217,8 @@ function check_step_used_different_uniques()::Nothing
     end
 end
 
-function foreach_resources()::ParallelResources
-    resources = ParallelResources()
+function foreach_resources()::ParallelStorage
+    resources = ParallelStorage()
     add_per_process!(resources, "context", make = OperationContext)
     add_per_thread!(resources, "context", make = OperationContext)
     add_per_step!(resources, "context", make = OperationContext, reset = increment_resets!)
@@ -499,9 +499,9 @@ function track_collect(
     return nothing
 end
 
-function collect_resources()::ParallelResources
+function collect_resources()::ParallelStorage
     resources = foreach_resources()
-    add_per_thread!(resources, "accumulator", make = track_make_accumulator)
+    add_per_thread!(resources, "result", make = track_make_accumulator)
     return resources
 end
 
@@ -530,8 +530,14 @@ function check_used_merges(expected_used_merges::Int)::Nothing
 end
 
 function run_collect(collect::Function; flags...)::Nothing
-    accumulated =
-        collect(track_collect, tracked_step, collect_resources(), 1:steps_count; flags...)
+    accumulated = collect(
+        track_collect,
+        tracked_step,
+        collect_resources(),
+        1:steps_count;
+        into="result",
+        flags...
+    )
     @test accumulated.count == steps_count
     @test accumulated.sum == round(Int, steps_count * (steps_count + 1) / 2)
     return nothing
@@ -539,7 +545,7 @@ end
 
 function check_s_collect(; flags...)::Nothing
     reset_test!()
-    run_collect(s_collect; flags...)
+    run_collect(s_collect; into="result", flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(1)
     check_step_used_different_uniques()
@@ -556,7 +562,7 @@ end
 
 function check_t_collect(; expected_used_threads = nthreads(), flags...)::Nothing
     reset_test!()
-    run_collect(t_collect; flags...)
+    run_collect(t_collect; into="result", flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(expected_used_threads)
     check_step_used_different_uniques()
