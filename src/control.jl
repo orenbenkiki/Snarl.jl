@@ -22,6 +22,7 @@ export t_collect
 export d_foreach
 export d_collect
 export dt_foreach
+export dt_collect
 
 """
 The `@simd` directive to use for an inner loop.
@@ -54,7 +55,7 @@ const default_batch_factor = 4
 
 """
     s_foreach(step::Function, resources::ParallelResources, values::collection;
-              simd=default_simd)
+              simd::SimdFlag=default_simd)
 
 Perform `step` for each `value` in `values`, serially, using the current thread in the current
 process.
@@ -62,8 +63,8 @@ process.
 This is implemented as a simple loop using the specified `simd`, which repeatedly invoked
 `step(resources, value)`. The return value of `step` is discarded.
 
-Having this makes it easier to convert a parallel loop to a serial one, for example for measuring
-performance.
+Having this makes it easier to convert a parallel loop to a serial one, for example for comparing
+parallel and serial performance.
 """
 function s_foreach(
     step::Function,
@@ -82,22 +83,22 @@ function s_foreach(
         end
 
     elseif simd == false
-        for value in values  # Foo
+        for value in values
             step(resources, value)
         end
 
     else
-        throw(ArgumentError("invalid simd flag: $(simd)"))
+        throw(ArgumentError("Invalid simd flag: $(simd)"))
     end
 
-    yield()  # Allow scheduler to deal with contention every batch of operations.
+    yield()  # Allow the scheduler to deal with contention every batch of operations.
 
     return nothing
 end
 
 """
     s_collect(collect::Function, step::Function, resources::ParallelResources, values::collection;
-              simd=default_simd)
+              simd::SimdFlag=default_simd)
 
 Perform `step` for each `value` in `values`, serially, using the current thread in the current
 process; `collect` the returned results into a single accumulator and return it.
@@ -115,7 +116,7 @@ of `collect` is ignored.
     entry.
 
 Having this makes it easier to convert a parallel collection to a serial one, for example for
-measuring performance.
+comparing parallel and serial performance.
 """
 function s_collect(
     collect::Function,
@@ -134,23 +135,28 @@ function s_collect(
 end
 
 function batch_values_view(values, batch_size::Number, batch_index::Int)::Any
-    return batches_values_view(values, batch_size, batch_index, batch_index)
-end
-
-function batches_values_view(
-    values,
-    batch_size::Number,
-    first_batch_index::Int,
-    last_batch_index::Int,
-)::Any
-    first_step_index = round(Int, (first_batch_index - 1) * batch_size) + 1
-    last_step_index = round(Int, last_batch_index * batch_size)
+    first_step_index = round(Int, (batch_index - 1) * batch_size) + 1
+    last_step_index = round(Int, batch_index * batch_size)
     @assert 1 <= first_step_index &&
-            first_step_index <= last_step_index && last_step_index <= length(values)
+            first_step_index <= last_step_index &&
+            last_step_index <= length(values)
     return @views @inbounds values[first_step_index:last_step_index]
 end
 
-function batches_data(
+function batch_values_views(
+    values,
+    batch_size::Number,
+    first_batch_index::Int,
+    batches_count::Int
+)::Array{Any,1}
+    views = Array{Any,1}(undef, batches_count)
+    for index in 1:batches_count
+        views[index] = batch_values_view(values, batch_size, first_batch_index + index - 1)
+    end
+    return views
+end
+
+function batches_configuration(
     step::Function,
     resources::ParallelResources,
     values,
@@ -179,17 +185,13 @@ end
 
 """
     t_foreach(step::Function, resources::ParallelResources, values::collection;
-              batch_factor=default_batch_factor, simd=default_simd)
+              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
 
 Perform a step for each value in the collection, in parallel, using multiple threads in the current
 process.
 
-Scheduling is done in equal-size batches where on average each thread will execute `batch_factor`
-such batches. Setting this to a value large than one compensates for variability between computation
-time of such batches. However setting this to higher values also increases scheduling overhead.
-
-Each batch will contain at least `minimal_batch` iterations, even if this means using a smaller
-number of threads.
+Scheduling is done in equal-size batches containing at least `minimal_batch` iterations in each,
+where on average each thread will execute at most `batch_factor` such batches.
 
 Each batch is executed as an inner loop using `s_foreach` with the specified `simd`.
 """
@@ -201,15 +203,22 @@ function t_foreach(
     minimal_batch::Int = 1,
     simd::SimdFlag = default_simd,
 )::Nothing
-    batches_count, batch_size =
-        batches_data(step, resources, values, batch_factor, minimal_batch, simd, nthreads())  # Only seems unreached
+    batches_count, batch_size = batches_configuration(
+        step,
+        resources,
+        values,
+        batch_factor,
+        minimal_batch,
+        simd,
+        nthreads()
+    )
 
     if batches_count <= 1
         s_foreach(step, resources, values, simd = simd)
     elseif batches_count <= nthreads()
         t_foreach_up_to_nthreads(step, resources, values, batch_size, batches_count, simd)
     else
-        t_foreach_more_than_threads(
+        t_foreach_more_than_nthreads(
             step,
             resources,
             values,
@@ -244,7 +253,7 @@ function t_foreach_up_to_nthreads(
     return nothing
 end
 
-function t_foreach_more_than_threads(
+function t_foreach_more_than_nthreads(
     step::Function,
     resources::ParallelResources,
     values,
@@ -272,14 +281,15 @@ end
 
 """
     t_collect(collect::Function, step::Function, resources::ParallelResources, values::collection;
-              batch_factor=default_batch_factor, simd=default_simd)
+              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
 
 Perform `step` for each `value` in `values`, serially, using multiple threads in the current
 process; `collect` the returned results into a single accumulator and return it. To manage this,
-a per-process `_pending_threads` resource is added.
+a per-process `_pending_threads` resource is added containing a stack (array) of pending thread
+identifiers (whose results were not collected yet).
 
 This builds on `s_collect` to accumulate results in each thread. The per-thread accumulators are
-merged together (in multiple threads) by invoking `collect(into_accumulator, from_accumulator)`.
+merged together (using multiple threads) by invoking `collect(into_accumulator, from_accumulator)`.
 The final result is returned.
 """
 function t_collect(
@@ -291,8 +301,15 @@ function t_collect(
     minimal_batch::Int = 1,
     simd::SimdFlag = default_simd,
 )::Any
-    batches_count, batch_size =
-        batches_data(step, resources, values, batch_factor, minimal_batch, simd, nthreads())
+    batches_count, batch_size = batches_configuration(
+        step,
+        resources,
+        values,
+        batch_factor,
+        minimal_batch,
+        simd,
+        nthreads()
+    )
 
     if batches_count <= 1
         return s_collect(collect, step, resources, values, simd = simd)
@@ -347,7 +364,7 @@ function t_collect_up_to_nthreads(
             batch_values_view(values, batch_size, batch_index),
             simd = simd,
         )
-        merge_accumulators(collect, resources)
+        collect_thread_accumulator(collect, resources)
     end
 
     return nothing
@@ -376,13 +393,13 @@ function t_collect_more_than_threads(
             )
             batch_index = atomic_add!(next_batch_index, 1)
         end
-        merge_accumulators(collect, resources)
+        collect_thread_accumulator(collect, resources)
     end
 
     return nothing
 end
 
-function merge_accumulators(collect::Function, resources::ParallelResources)::Nothing
+function collect_thread_accumulator(collect::Function, resources::ParallelResources)::Nothing
     thread_id = threadid()
     while true
         other_id = 0
@@ -394,6 +411,7 @@ function merge_accumulators(collect::Function, resources::ParallelResources)::No
             end
         end
         other_id > 0 || break
+
         into_id = min(thread_id, other_id)
         from_id = max(thread_id, other_id)
         collect(
@@ -406,29 +424,25 @@ function merge_accumulators(collect::Function, resources::ParallelResources)::No
     return nothing
 end
 
-next_worker = Atomic{Int}(myid())
+next_worker_id = Atomic{Int}(myid())
 
 function next_worker!()::Int
-    worker_id = 1 + mod(atomic_add!(next_worker, 1), nprocs())
+    worker_id = myid()
     while worker_id == myid()
-        worker_id = 1 + mod(atomic_add!(next_worker, 1), nprocs())
+        worker_id = 1 + mod(atomic_add!(next_worker_id, 1), nprocs())
     end
     return worker_id
 end
 
 """
     d_foreach(step::Function, resources::ParallelResources, values::collection;
-              batch_factor=default_batch_factor, simd=default_simd)
+              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
 
 Perform a step for each value in the collection in parallel using a single thread in each of the
 processes (including the current one).
 
-Scheduling is done in equal-size batches where on average each process will execute `batch_factor`
-such batches. Setting this to a value large than one compensates for variability between computation
-time of such batches. However setting this to higher values also increases scheduling overhead.
-
-Each batch will contain at least `minimal_batch` iterations, even if this means using a smaller
-number of processes.
+Scheduling is done in equal-size batches containing at least `minimal_batch` iterations in each,
+where on average each process (thread) will execute at most `batch_factor` such batches.
 
 Each batch is executed as an inner loop using `s_foreach` with the specified `simd`.
 """
@@ -440,8 +454,15 @@ function d_foreach(
     minimal_batch::Int = 1,
     simd::SimdFlag = default_simd,
 )::Nothing
-    batches_count, batch_size =
-        batches_data(step, resources, values, batch_factor, minimal_batch, simd, nprocs())
+    batches_count, batch_size = batches_configuration(
+        step,
+        resources,
+        values,
+        batch_factor,
+        minimal_batch,
+        simd,
+        nprocs()
+    )
 
     if batches_count <= 1
         s_foreach(step, resources, values, simd = simd)
@@ -493,16 +514,28 @@ function d_foreach_more_than_nprocs(
     jobs_channel = RemoteChannel(() -> Channel{Any}(batches_count + nprocs()))
 
     @sync begin
-        send_jobs_batches(jobs_channel, values, batch_size, 1, nworkers())
-
+        next_batch_index = 1
         for worker_id in workers()
-            @spawnat worker_id run_jobs_channel_batches(jobs_channel, step, resources, simd)
+            @spawnat worker_id s_run_batches_from_jobs_channel(
+                jobs_channel,
+                step,
+                resources,
+                batch_values_view(values, batch_size, next_batch_index),
+                simd
+            )
+            next_batch_index += 1
         end
 
-        send_jobs_batches(jobs_channel, values, batch_size, nprocs(), batches_count)
+        send_jobs_batches(jobs_channel, values, batch_size, next_batch_index + 1, batches_count)
         send_jobs_terminations(jobs_channel, nprocs())
 
-        run_jobs_channel_batches(jobs_channel, step, resources, simd)
+        s_run_batches_from_jobs_channel(
+            jobs_channel,
+            step,
+            resources,
+            batch_values_view(values, batch_size, next_batch_index),
+            simd
+        )
     end
 
     return nothing
@@ -530,16 +563,16 @@ function send_jobs_terminations(
     return nothing
 end
 
-function run_jobs_channel_batches(
+function s_run_batches_from_jobs_channel(
     jobs_channel::RemoteChannel{Channel{Any}},
     step::Function,
     resources::ParallelResources,
+    batch_values,
     simd::SimdFlag,
 )::Nothing
-    while true
-        batch_values = take!(jobs_channel)
-        batch_values != nothing || break
+    while batch_values != nothing
         s_foreach(step, resources, batch_values, simd = simd)
+        batch_values = take!(jobs_channel)
     end
 
     return nothing
@@ -554,23 +587,26 @@ const PreferFlag = Union{Symbol,Val{:threads},Val{:distributed}}
 The default `prefer` policy to use to distribute work across processes.
 
 This is `:threads` assuming that when the number of batches is low, it is better to run them all on
-the current process.
+the current process to minimize memory usage and network traffic.
 """
 const default_prefer = :threads
 
+function verify_prefer(prefer::PreferFlag)::Nothing
+    if prefer != :threads && prefer != :distributed
+        throw(ArgumentError("Invalid prefer flag: $(prefer)"))
+    end
+    return nothing
+end
+
 """
     dt_foreach(step::Function, resources::ParallelResources, values::collection;
-               batch_factor=default_batch_factor, prefer=default_prefer, simd=default_simd)
+               batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
 
 Perform a step for each value in the collection in parallel using multiple thread in multiple
 processes (including the current one).
 
-Scheduling is done in equal-size batches where on average each thread will execute `batch_factor`
-such batches. Setting this to a value large than one compensates for variability between computation
-time of such batches. However setting this to higher values also increases scheduling overhead.
-
-Each batch will contain at least `minimal_batch` iterations, even if this means using a smaller
-number of threads.
+Scheduling is done in equal-size batches containing at least `minimal_batch` iterations in each,
+where on average each thread will execute at most `batch_factor` such batches.
 
 If fewer than the total number of threads are needed, then if `prefer` is `threads`, the minimal
 number of processes will be used (maximizing the use of the threads in each). If `prefer` is
@@ -588,11 +624,9 @@ function dt_foreach(
     prefer::PreferFlag = default_prefer,
     simd::SimdFlag = default_simd,
 )::Nothing
-    if prefer != :threads && prefer != :distributed
-        throw(ArgumentError("invalid prefer flag: $(prefer)"))
-    end
+    verify_prefer(prefer)
 
-    batches_count, batch_size = batches_data(
+    batches_count, batch_size = batches_configuration(
         step,
         resources,
         values,
@@ -605,17 +639,17 @@ function dt_foreach(
     if batches_count <= 1
         s_foreach(step, resources, values, simd = simd)
     elseif prefer == :distributed || batches_count > total_threads_count
-        dt_foreach_distributed(step, resources, values, batch_size, batches_count, simd)
+        dt_foreach_prefer_distributed(step, resources, values, batch_size, batches_count, simd)
     elseif batches_count <= nthreads()
-        t_foreach(step, resources, values, simd = simd)
+        t_foreach_up_to_nthreads(step, resources, values, batch_size, batches_count, simd)
     else
-        dt_foreach_threads(step, resources, values, batch_size, batches_count, simd)
+        dt_foreach_prefer_threads(step, resources, values, batch_size, batches_count, simd)
     end
 
     return nothing
 end
 
-function dt_foreach_distributed(
+function dt_foreach_prefer_distributed(
     step::Function,
     resources::ParallelResources,
     values,
@@ -623,43 +657,47 @@ function dt_foreach_distributed(
     batches_count::Int,
     simd::SimdFlag,
 )::Nothing
-    dynamic_threads_count = min(batches_count, total_threads_count - 1)
-    jobs_channel = RemoteChannel(() -> Channel{Any}(dynamic_threads_count))
-    used_threads_of_processes = compute_used_threads_of_processes(dynamic_threads_count)
+    used_threads_count = min(batches_count, total_threads_count)
+    jobs_channel = RemoteChannel(() -> Channel{Any}(batches_count + used_threads_count))
+    used_threads_of_processes = compute_used_threads_of_processes(used_threads_count)
 
+    next_batch_index = 1
     @sync begin
         for process = 1:nprocs()
             process != myid() || continue
-            @inbounds used_threads_of_processes[process] > 0 || continue
-            @spawnat process run_many_jobs_channel_batches_per_thread(
+            @inbounds used_threads_of_process = used_threads_of_processes[process]
+            used_threads_of_process > 0 || continue
+            @spawnat process t_run_batches_from_jobs_channel(
                 jobs_channel,
-                (@inbounds used_threads_of_processes[process]),
+                used_threads_of_process,
                 step,
                 resources,
+                batch_values_views(values, batch_size, next_batch_index, used_threads_of_process),
                 simd,
             )
+            next_batch_index += used_threads_of_process
         end
 
-        used_threads_of_current_process = @inbounds used_threads_of_processes[myid()]
-        @assert used_threads_of_current_process > 0
-        @threads for batch_index = 1:used_threads_of_current_process
-            if batch_index == used_threads_of_current_process
+        used_threads_of_process = @inbounds used_threads_of_processes[myid()]
+        @assert used_threads_of_process > 0
+        @threads for index = 1:used_threads_of_process
+            if index == used_threads_of_process
                 send_jobs_batches(
                     jobs_channel,
                     values,
                     batch_size,
-                    used_threads_of_current_process,
+                    next_batch_index + used_threads_of_process,
                     batches_count,
                 )
-                send_jobs_terminations(jobs_channel, dynamic_threads_count)
-            else
-                s_foreach(
-                    step,
-                    resources,
-                    batch_values_view(values, batch_size, batch_index),
-                )
-                run_jobs_channel_batches(jobs_channel, step, resources, simd)
+                send_jobs_terminations(jobs_channel, used_threads_count)
             end
+            s_run_batches_from_jobs_channel(
+                jobs_channel,
+                step,
+                resources,
+                batch_values_view(values, batch_size, next_batch_index + index - 1),
+                simd
+            )
         end
     end
 
@@ -667,11 +705,10 @@ function dt_foreach_distributed(
 end
 
 # TODO: This could be made more efficient if needed.
-function compute_used_threads_of_processes(dynamic_threads_count::Int)::Array{Int,1}
+function compute_used_threads_of_processes(used_threads_count::Int)::Array{Int,1}
     used_threads_of_processes = zeros(Int, nprocs())
-    @inbounds used_threads_of_processes[myid()] = 1 # For sending the jobs and terminations.
 
-    remaining_threads_count = dynamic_threads_count
+    remaining_threads_count = used_threads_count
     @assert remaining_threads_count > 0
 
     while true
@@ -694,7 +731,7 @@ function compute_used_threads_of_processes(dynamic_threads_count::Int)::Array{In
     end
 end
 
-function dt_foreach_threads(
+function dt_foreach_prefer_threads(
     step::Function,
     resources::ParallelResources,
     values,
@@ -702,81 +739,70 @@ function dt_foreach_threads(
     batches_count::Int,
     simd::SimdFlag,
 )::Nothing
-    jobs_channel = RemoteChannel(() -> Channel{Any}(batches_count))
-
-    remaining_batches_count = batches_count - (nthreads() - 1)
-    @assert remaining_batches_count > 1
-
     used_processes = zeros(Bool, nprocs())
     used_processes[myid()] = true
 
-    @sync begin
-        while true
-            worker = next_worker!()
-            used_processes[worker] && continue
-            used_processes[worker] = true
+    remaining_batches_count = batches_count - nthreads()
+    @assert remaining_batches_count > 0
 
-            threads_count = min(remaining_batches_count, @inbounds threads_count_of_processes[worker])
+    @sync begin
+        next_batch_index = 1
+        while true
+            worker_id = next_worker!()
+            used_processes[worker_id] && continue
+            used_processes[worker_id] = true
+
+            threads_count = min(remaining_batches_count, @inbounds threads_count_of_processes[worker_id])
             threads_count > 0 || continue
 
-            @spawnat worker run_one_jobs_channel_batch_per_thread(
-                jobs_channel,
-                threads_count,
+            @spawnat worker_id t_run_batches(
                 step,
                 resources,
+                batch_values_views(values, batch_size, next_batch_index, threads_count),
                 simd,
             )
+            next_batch_index += threads_count
 
             remaining_batches_count -= threads_count
-            if remaining_batches_count == 0
-                break
-            end
+            remaining_batches_count > 0 || break
         end
 
-        @threads for batch_index = 1:nthreads()
-            if batch_index == nthreads()
-                send_jobs_batches(
-                    jobs_channel,
-                    values,
-                    batch_size,
-                    nthreads(),
-                    batches_count,
-                )
-            else
-                s_foreach(
-                    step,
-                    resources,
-                    batch_values_view(values, batch_size, batch_index),
-                )
-            end
-        end
+        t_run_batches(
+            step,
+            resources,
+            batch_values_views(values, batch_size, next_batch_index, nthreads()),
+            simd,
+        )
+        next_batch_index += nthreads()
+
+        @assert next_batch_index == batches_count + 1
     end
 end
 
-function run_many_jobs_channel_batches_per_thread(
-    jobs_channel::Distributed.RemoteChannel{Channel{Any}},
-    threads_count::Int,
+function t_run_batches(
     step::Function,
     resources::ParallelResources,
+    batch_values::Any,
     simd::SimdFlag,
 )::Nothing
-    @sync @threads for _ = 1:threads_count
-        run_jobs_channel_batches(jobs_channel, step, resources, simd)
+    @sync @threads for index = 1:length(batch_values)
+        s_foreach(step, resources, batch_values[index], simd = simd)
     end
 
     return nothing
 end
 
-function run_one_jobs_channel_batch_per_thread(
+function t_run_batches_from_jobs_channel(
     jobs_channel::Distributed.RemoteChannel{Channel{Any}},
     threads_count::Int,
     step::Function,
     resources::ParallelResources,
+    batch_values::Array{Any,1},
     simd::SimdFlag,
 )::Nothing
-    @sync @threads for _ = 1:threads_count
-        batch_values = take!(jobs_channel)
-        s_foreach(step, resources, batch_values, simd = simd)
+    @assert length(batch_values) == threads_count
+    @sync @threads for index = 1:threads_count
+        s_run_batches_from_jobs_channel(jobs_channel, step, resources, batch_values[index], simd)
     end
 
     return nothing

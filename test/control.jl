@@ -151,8 +151,8 @@ function reset_test!()::Nothing
     return nothing
 end
 
-@everywhere function track_step(resources::ParallelResources, step_index::Int)::Int
-    sleep(0.05)
+@everywhere function tracked_step(resources::ParallelResources, step_index::Int)::Int
+    # sleep(0.05)
 
     per_step_context = get_per_step(resources, "context")
     @assert per_step_context.resets > 0
@@ -226,7 +226,7 @@ function foreach_resources()::ParallelResources
 end
 
 function run_foreach(foreach::Function; flags...)::Nothing
-    foreach(track_step, foreach_resources(), 1:steps_count; flags...)
+    foreach(tracked_step, foreach_resources(), 1:steps_count; flags...)
     return nothing
 end
 
@@ -253,7 +253,7 @@ end
         end
         @testset "invalid" begin
             @test_throws ArgumentError s_foreach(
-                track_step,
+                tracked_step,
                 foreach_resources(),
                 1:1,
                 simd = :invalid,
@@ -392,7 +392,7 @@ end
 
 function check_dt_foreach(;
     expected_used_processes::Int = nprocs(),
-    expected_used_threads::Int = nprocs() * nthreads() - 1,
+    expected_used_threads::Int = nprocs() * nthreads(),
     flags...,
 )::Nothing
     reset_test!()
@@ -406,7 +406,7 @@ end
 @testset "dt_foreach" begin
     @testset "invalid" begin
         @test_throws ArgumentError dt_foreach(
-            track_step,
+            tracked_step,
             foreach_resources(),
             1:1,
             prefer = :invalid,
@@ -418,7 +418,7 @@ end
     end
 
     @testset "minimal_batch" begin
-        @testset "all" begin
+        @testset "one" begin
             check_dt_foreach(
                 expected_used_processes = 1,
                 expected_used_threads = 1,
@@ -448,10 +448,11 @@ end
 
         @testset "half" begin
             @testset "threads" begin
+                minimal_batch = ceil(Int, steps_count / (2 * nthreads()))
                 check_dt_foreach(
                     expected_used_processes = 2,
-                    expected_used_threads = 2 * nthreads() - 1,
-                    minimal_batch = ceil(Int, steps_count / (2 * nthreads())),
+                    expected_used_threads = floor(Int, steps_count / minimal_batch),
+                    minimal_batch = minimal_batch,
                     prefer = :threads,
                 )
             end
@@ -459,8 +460,8 @@ end
             @testset "distributed" begin
                 check_dt_foreach(
                     expected_used_processes = nprocs(),
-                    expected_used_threads = nprocs() * 2,
-                    minimal_batch = ceil(Int, steps_count / (2 * nprocs())),
+                    expected_used_threads = nprocs(),
+                    minimal_batch = ceil(Int, steps_count / nprocs()),
                     prefer = :distributed,
                 )
             end
@@ -530,7 +531,7 @@ end
 
 function run_collect(collect::Function; flags...)::Nothing
     accumulated =
-        collect(track_collect, track_step, collect_resources(), 1:steps_count; flags...)
+        collect(track_collect, tracked_step, collect_resources(), 1:steps_count; flags...)
     @test accumulated.count == steps_count
     @test accumulated.sum == round(Int, steps_count * (steps_count + 1) / 2)
     return nothing

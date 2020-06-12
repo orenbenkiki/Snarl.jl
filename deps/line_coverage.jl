@@ -1,4 +1,15 @@
-using Coverage
+try
+    using Coverage
+catch error
+    if isa(error, LoadError)
+        using Pkg
+        Pkg.add("Coverage")
+        using Coverage
+    else
+        rethrow()
+    end
+end
+
 # Process '*.cov' files
 coverage = process_folder() # defaults to src/; alternatively, supply the folder name as argument
 coverage = append!(coverage, process_folder("test"))

@@ -1,2 +1,0 @@
-import JuliaFormatter
-JuliaFormatter.format(".")
