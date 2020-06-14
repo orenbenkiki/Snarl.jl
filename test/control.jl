@@ -407,7 +407,7 @@ end
             tracked_step,
             foreach_resources(),
             1:1,
-            prefer = :invalid,
+            distribution = :invalid,
         )
     end
 
@@ -425,42 +425,42 @@ end
         end
 
         @testset "many" begin
-            @testset "threads" begin
-                check_dt_foreach(
-                    expected_used_processes = 1,
-                    expected_used_threads = nthreads(),
-                    minimal_batch = ceil(Int, steps_count / nthreads()),
-                    prefer = :threads,
-                )
-            end
-
-            @testset "distributed" begin
+            @testset "maximize_processes" begin
                 check_dt_foreach(
                     expected_used_processes = nprocs(),
                     expected_used_threads = nprocs(),
                     minimal_batch = ceil(Int, steps_count / nprocs()),
-                    prefer = :distributed,
+                    distribution = :maximize_processes,
+                )
+            end
+
+            @testset "minimize_processes" begin
+                check_dt_foreach(
+                    expected_used_processes = 1,
+                    expected_used_threads = nthreads(),
+                    minimal_batch = ceil(Int, steps_count / nthreads()),
+                    distribution = :minimize_processes,
                 )
             end
         end
 
         @testset "half" begin
-            @testset "threads" begin
+            @testset "maximize_processes" begin
+                check_dt_foreach(
+                    expected_used_processes = nprocs(),
+                    expected_used_threads = nprocs(),
+                    minimal_batch = ceil(Int, steps_count / nprocs()),
+                    distribution = :maximize_processes,
+                )
+            end
+
+            @testset "minimize_processes" begin
                 minimal_batch = ceil(Int, steps_count / (2 * nthreads()))
                 check_dt_foreach(
                     expected_used_processes = 2,
                     expected_used_threads = floor(Int, steps_count / minimal_batch),
                     minimal_batch = minimal_batch,
-                    prefer = :threads,
-                )
-            end
-
-            @testset "distributed" begin
-                check_dt_foreach(
-                    expected_used_processes = nprocs(),
-                    expected_used_threads = nprocs(),
-                    minimal_batch = ceil(Int, steps_count / nprocs()),
-                    prefer = :distributed,
+                    distribution = :minimize_processes,
                 )
             end
         end
