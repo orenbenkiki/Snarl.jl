@@ -6,8 +6,7 @@ module Launcher
 using Base.Threads
 using Distributed
 
-export launch_test_workers
-export test_workers_count
+export launch_test_workers, test_workers_count
 
 const test_workers_count = 4
 

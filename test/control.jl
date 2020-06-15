@@ -37,6 +37,7 @@ remote_do(serve_counters, 1)
 @everywhere function next!(counter::Int)::Int
     response_channel = RemoteChannel(() -> Channel{Int}(1))
     put!(counters_channel, (counter, response_channel))
+    sleep(0.001)  # TODO: Why is this necessary?
     return take!(response_channel)
 end
 
@@ -150,7 +151,8 @@ function reset_test!()::Nothing
 end
 
 @everywhere function tracked_step(resources::ParallelStorage, step_index::Int)::Int
-    # sleep(0.05)
+    @debug "step" step_index
+    # sleep(0.001)
 
     per_step_context = get_per_step(resources, "context")
     @assert per_step_context.resets > 0
@@ -229,68 +231,64 @@ function run_foreach(foreach::Function; flags...)::Nothing
 end
 
 function check_s_foreach(; flags...)::Nothing
+    @debug "BEGIN S_FOREACH TEST" flags
     reset_test!()
     run_foreach(s_foreach; flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(1)
     check_step_used_different_uniques()
+    @debug "END S_FOREACH TEST"
     return nothing
 end
 
-@testset "s_foreach" begin
-    @testset "default" begin
-        check_s_foreach()
-    end
+@testset "s_foreach/default" begin
+    check_s_foreach()
+end
 
-    @testset "simd" begin
-        @testset "true" begin
-            check_s_foreach(simd = true)
-        end
-        @testset "false" begin
-            check_s_foreach(simd = false)
-        end
-        @testset "invalid" begin
-            @test_throws ArgumentError s_foreach(
-                tracked_step,
-                foreach_resources(),
-                1:1,
-                simd = :invalid,
-            )
-        end
-    end
+@testset "s_foreach/simd/invalid" begin
+    @test_throws ArgumentError s_foreach(
+        tracked_step,
+        foreach_resources(),
+        1:1,
+        simd = :invalid,
+    )
+end
+
+@testset "s_foreach/simd/true" begin
+    check_s_foreach(simd = true)
+end
+@testset "s_foreach/simd/false" begin
+    check_s_foreach(simd = false)
 end
 
 function check_t_foreach(; expected_used_threads::Int = nthreads(), flags...)::Nothing
+    @debug "BEGIN T_FOREACH TEST" expected_used_threads flags
     reset_test!()
     run_foreach(t_foreach; flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(expected_used_threads)
     check_step_used_different_uniques()
+    @debug "END T_FOREACH TEST"
     return nothing
 end
 
-@testset "t_foreach" begin
-    @testset "default" begin
-        check_t_foreach()
-    end
+@testset "t_foreach/default" begin
+    check_t_foreach()
+end
 
-    @testset "batch_factor" begin
-        @testset "one" begin
-            check_t_foreach(batch_factor = 1)
-        end
-        @testset "many" begin
-            check_t_foreach(batch_factor = typemax(Int))
-        end
-    end
+@testset "t_foreach/batch_factor/one" begin
+    check_t_foreach(batch_factor = 1)
+end
+@testset "t_foreach/batch_factor/many" begin
+    check_t_foreach(batch_factor = typemax(Int))
+end
 
-    @testset "minimal_batch" begin
-        @testset "half" begin
-            check_t_foreach(expected_used_threads = 2, minimal_batch = div(steps_count, 2))
-        end
-        @testset "all" begin
-            check_t_foreach(expected_used_threads = 1, minimal_batch = typemax(Int))
-        end
-    end
+@testset "t_foreach/minimal_batch/half" begin
+    check_t_foreach(expected_used_threads = 2, minimal_batch = div(steps_count, 2))
+end
+
+@testset "t_foreach/minimal_batch/all" begin
+    check_t_foreach(expected_used_threads = 1, minimal_batch = typemax(Int))
 end
 
 function check_used_single_thread_of_processes(
@@ -329,39 +327,34 @@ function check_step_used_different_uniques()::Nothing
 end
 
 function check_d_foreach(; expected_used_processes::Int = nprocs(), flags...)::Nothing
+    @debug "BEGIN D_FOREACH TEST" expected_used_processes flags
     reset_test!()
     run_foreach(d_foreach; flags...)
     check_steps_did_run()
     check_used_single_thread_of_processes(expected_used_processes)
     check_step_used_different_uniques()
+    @debug "END D_FOREACH TEST"
     return nothing
 end
 
-@testset "d_foreach" begin
-    @testset "default" begin
-        check_d_foreach()
-    end
+@testset "d_foreach/default" begin
+    check_d_foreach()
+end
 
-    @testset "batch_factor" begin
-        @testset "one" begin
-            check_d_foreach(batch_factor = 1)
-        end
-        @testset "many" begin
-            check_d_foreach(batch_factor = typemax(Int))
-        end
-    end
+@testset "d_foreach/batch_factor/one" begin
+    check_d_foreach(batch_factor = 1)
+end
 
-    @testset "minimal_batch" begin
-        @testset "half" begin
-            check_d_foreach(
-                expected_used_processes = 2,
-                minimal_batch = div(steps_count, 2),
-            )
-        end
-        @testset "all" begin
-            check_d_foreach(expected_used_processes = 1, minimal_batch = typemax(Int))
-        end
-    end
+@testset "d_foreach/batch_factor/many" begin
+    check_d_foreach(batch_factor = typemax(Int))
+end
+
+@testset "d_foreach/minimal_batch/half" begin
+    check_d_foreach(expected_used_processes = 2, minimal_batch = div(steps_count, 2))
+end
+
+@testset "d_foreach/minimal_batch/all" begin
+    check_d_foreach(expected_used_processes = 1, minimal_batch = typemax(Int))
 end
 
 function check_used_all_threads_of_processes(
@@ -393,78 +386,72 @@ function check_dt_foreach(;
     expected_used_threads::Int = nprocs() * nthreads(),
     flags...,
 )::Nothing
+    @debug "BEGIN DT_FOREACH TEST" expected_used_processes expected_used_threads flags
     reset_test!()
     run_foreach(dt_foreach; flags...)
     check_steps_did_run()
     check_used_all_threads_of_processes(expected_used_processes, expected_used_threads)
     check_step_used_different_uniques()
+    @debug "END DT_FOREACH TEST"
     return nothing
 end
 
-@testset "dt_foreach" begin
-    @testset "invalid" begin
-        @test_throws ArgumentError dt_foreach(
-            tracked_step,
-            foreach_resources(),
-            1:1,
-            distribution = :invalid,
-        )
-    end
+@testset "dt_foreach/distribution/invalid" begin
+    @test_throws ArgumentError dt_foreach(
+        tracked_step,
+        foreach_resources(),
+        1:1,
+        distribution = :invalid,
+    )
+end
 
-    @testset "default" begin
-        check_dt_foreach()
-    end
+@testset "dt_foreach/default" begin
+    check_dt_foreach()
+end
 
-    @testset "minimal_batch" begin
-        @testset "one" begin
-            check_dt_foreach(
-                expected_used_processes = 1,
-                expected_used_threads = 1,
-                minimal_batch = typemax(Int),
-            )
-        end
+@testset "dt_foreach/minimal_batch/one" begin
+    check_dt_foreach(
+        expected_used_processes = 1,
+        expected_used_threads = 1,
+        minimal_batch = typemax(Int),
+    )
+end
 
-        @testset "many" begin
-            @testset "maximize_processes" begin
-                check_dt_foreach(
-                    expected_used_processes = nprocs(),
-                    expected_used_threads = nprocs(),
-                    minimal_batch = ceil(Int, steps_count / nprocs()),
-                    distribution = :maximize_processes,
-                )
-            end
+@testset "dt_foreach/minimal_batch/many/maximize_processes" begin
+    check_dt_foreach(
+        expected_used_processes = nprocs(),
+        expected_used_threads = nprocs(),
+        minimal_batch = ceil(Int, steps_count / nprocs()),
+        distribution = :maximize_processes,
+    )
+end
 
-            @testset "minimize_processes" begin
-                check_dt_foreach(
-                    expected_used_processes = 1,
-                    expected_used_threads = nthreads(),
-                    minimal_batch = ceil(Int, steps_count / nthreads()),
-                    distribution = :minimize_processes,
-                )
-            end
-        end
+@testset "dt_foreach/minimal_batch/many/minimize_processes" begin
+    check_dt_foreach(
+        expected_used_processes = 1,
+        expected_used_threads = nthreads(),
+        minimal_batch = ceil(Int, steps_count / nthreads()),
+        distribution = :minimize_processes,
+    )
+end
 
-        @testset "half" begin
-            @testset "maximize_processes" begin
-                check_dt_foreach(
-                    expected_used_processes = nprocs(),
-                    expected_used_threads = nprocs(),
-                    minimal_batch = ceil(Int, steps_count / nprocs()),
-                    distribution = :maximize_processes,
-                )
-            end
+@testset "dt_foreach/minimal_batch/half/maximize_processes" begin
+    check_dt_foreach(
+        expected_used_processes = nprocs(),
+        expected_used_threads = nprocs(),
+        minimal_batch = ceil(Int, steps_count / nprocs()),
+        distribution = :maximize_processes,
+    )
+end
 
-            @testset "minimize_processes" begin
-                minimal_batch = ceil(Int, steps_count / (2 * nthreads()))
-                check_dt_foreach(
-                    expected_used_processes = 2,
-                    expected_used_threads = floor(Int, steps_count / minimal_batch),
-                    minimal_batch = minimal_batch,
-                    distribution = :minimize_processes,
-                )
-            end
-        end
-    end
+@testset "dt_foreach/minimal_batch/half/minimize_processes" begin
+    minimal_batch = ceil(Int, steps_count / (2 * nthreads()))
+    check_dt_foreach(
+        expected_used_processes = 2,
+        expected_used_threads = floor(Int, steps_count / minimal_batch),
+        minimal_batch = minimal_batch,
+        distribution = :minimize_processes,
+    )
 end
 
 mutable struct Accumulator
@@ -542,6 +529,7 @@ function run_collect(collect::Function; flags...)::Nothing
 end
 
 function check_s_collect(; flags...)::Nothing
+    @debug "BEGIN S_COLLECT TEST" flags
     reset_test!()
     run_collect(s_collect; into = "result", flags...)
     check_steps_did_run()
@@ -549,16 +537,16 @@ function check_s_collect(; flags...)::Nothing
     check_step_used_different_uniques()
     check_used_accumulators(1)
     check_used_merges(0)
+    @debug "END S_COLLECT TEST"
     return nothing
 end
 
-@testset "s_collect" begin
-    @testset "default" begin
-        check_s_collect()
-    end
+@testset "s_collect/default" begin
+    check_s_collect()
 end
 
 function check_t_collect(; expected_used_threads = nthreads(), flags...)::Nothing
+    @debug "BEGIN T_COLLECT TEST" expected_used_threads flags
     reset_test!()
     run_collect(t_collect; into = "result", flags...)
     check_steps_did_run()
@@ -566,29 +554,26 @@ function check_t_collect(; expected_used_threads = nthreads(), flags...)::Nothin
     check_step_used_different_uniques()
     check_used_accumulators(expected_used_threads)
     check_used_merges(expected_used_threads - 1)
+    @debug "END T_COLLECT TEST"
     return nothing
 end
 
-@testset "t_collect" begin
-    @testset "default" begin
-        check_t_collect()
-    end
+@testset "t_collect/default" begin
+    check_t_collect()
+end
 
-    @testset "batch_factor" begin
-        @testset "one" begin
-            check_t_collect(batch_factor = 1)
-        end
-        @testset "many" begin
-            check_t_collect(batch_factor = typemax(Int))
-        end
-    end
+@testset "t_collect/batch_factor/one" begin
+    check_t_collect(batch_factor = 1)
+end
 
-    @testset "minimal_batch" begin
-        @testset "half" begin
-            check_t_collect(expected_used_threads = 2, minimal_batch = div(steps_count, 2))
-        end
-        @testset "all" begin
-            check_t_collect(expected_used_threads = 1, minimal_batch = typemax(Int))
-        end
-    end
+@testset "t_collect/batch_factor/many" begin
+    check_t_collect(batch_factor = typemax(Int))
+end
+
+@testset "t_collect/minimal_batch/half" begin
+    check_t_collect(expected_used_threads = 2, minimal_batch = div(steps_count, 2))
+end
+
+@testset "t_collect/minimal_batch/all" begin
+    check_t_collect(expected_used_threads = 1, minimal_batch = typemax(Int))
 end

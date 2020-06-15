@@ -9,23 +9,12 @@ using Distributed
 using ..Launched
 using ..Storage
 
-export SimdFlag
-export PreferFlag
-
-export default_batch_factor
-export default_minimal_batch_size
-export default_maximize_distribution
-export default_simd
-
-export s_foreach
-export t_foreach
-export d_foreach
-export dt_foreach
-
-export s_collect
-export t_collect
-export d_collect
-export dt_collect
+export SimdFlag, PreferFlag
+export next_worker!
+export default_batch_factor,
+    default_minimal_batch_size, default_maximize_distribution, default_simd
+export s_foreach, t_foreach, d_foreach, dt_foreach
+export s_collect, t_collect, d_collect, dt_collect
 
 # Data types:
 
@@ -94,16 +83,44 @@ also more likely that less threads will run as weaker hyper-threads.
 """
 const default_distribution = :maximize_processes
 
-# Locals:
+# Workers:
 
 next_worker_id = Atomic{Int}(myid())
 
+"""
+Return the next worker process to use.
+
+This tries to spread the work evenly between all workers. Mainly intended to be used in `@spawnat
+next_worker!() ...` for launching a single job on some other process (never on the current process).
+"""
 function next_worker!()::Int
     worker_id = myid()
     while worker_id == myid()
         worker_id = 1 + mod(atomic_add!(next_worker_id, 1), nprocs())
     end
     return worker_id
+end
+
+function next_workers!(workers_count::Int)::Array{Int,1}
+    @assert 1 <= workers_count && workers_count <= nworkers()
+    if workers_count == nworkers()
+        return 2:nprocs()
+    end
+
+    worker_ids = Array{Int,1}(undef, workers_count)
+    is_process_used = zeros(Bool, nprocs())
+    remaining_workers_count = workers_count
+
+    while remaining_workers_count > 0
+        worker_id = next_worker!()
+        if !is_process_used[worker_id]
+            is_process_used[worker_id] = true
+            worker_ids[remaining_workers_count] = worker_id
+            remaining_workers_count -= 1
+        end
+    end
+
+    return worker_ids
 end
 
 # Foreach:
@@ -353,11 +370,12 @@ function d_foreach_up_to_nprocs(
     batches_count::Int,
     simd::SimdFlag,
 )::Nothing
-    @assert batches_count <= nprocs()
+    @assert 1 < batches_count && batches_count <= nprocs()
 
     @sync begin
-        for batch_index = 2:batches_count
-            @spawnat next_worker!() s_foreach(
+        worker_ids = next_workers!(batches_count - 1)
+        for batch_index = 1:(batches_count-1)
+            @spawnat worker_ids[batch_index] s_foreach(
                 step,
                 storage,
                 batch_values_view(values, batch_size, batch_index),
@@ -365,7 +383,12 @@ function d_foreach_up_to_nprocs(
             )
         end
 
-        s_foreach(step, storage, batch_values_view(values, batch_size, 1), simd = simd)
+        s_foreach(
+            step,
+            storage,
+            batch_values_view(values, batch_size, batches_count),
+            simd = simd,
+        )
     end
 
     return nothing
@@ -541,8 +564,8 @@ process; `collect` the returned results into a single accumulator and return it.
 
 This is implemented as a simple loop using the specified `simd`, which repeatedly invokes
 `step(storage, value)`. The `collect(accumulator, step_result)` is likewise repeatedly invoked to
-accumulate the step results into a single per-thread value named (by default, `accumulator`). The return value
-of `collect` is ignored.
+accumulate the step results into a single per-thread value named (by default, `accumulator`). The
+return value of `collect` is ignored.
 
 !!! note
 
@@ -624,7 +647,7 @@ function t_collect(
             simd,
         )
     else
-        t_collect_more_than_threads(
+        t_collect_more_than_nthreads(
             collect,
             step,
             storage,
@@ -669,7 +692,7 @@ function t_collect_up_to_nthreads(
     return nothing
 end
 
-function t_collect_more_than_threads(
+function t_collect_more_than_nthreads(
     collect::Function,
     step::Function,
     storage::ParallelStorage,
@@ -726,6 +749,7 @@ function batches_configuration(
         batch_size = length(values) / batches_count
     end
 
+    @debug "batches_configuration" batches_count batch_size
     return batches_count, batch_size
 end
 

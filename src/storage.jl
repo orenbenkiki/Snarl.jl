@@ -5,21 +5,11 @@ module Storage
 
 import Base.Semaphore
 
-export GlobalStorage
-export LocalStorage
-export ParallelStorage
+export GlobalStorage, LocalStorage, ParallelStorage
 
-export add_per_process!
-export add_per_step!
-export add_per_thread!
-export clear!
-export get_per_process
-export get_per_step
-export get_per_thread
-export get_semaphore
-export get_value
-export with_per_process
-export with_value
+export add_per_process!, add_per_step!, add_per_thread!, clear!
+export get_per_process, get_per_step, get_per_thread, get_semaphore, get_value
+export with_per_process, with_value
 
 """
 Provide a per-process ("global") value to a parallel algorithm.

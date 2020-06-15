@@ -1,15 +1,35 @@
+using Dates
+
 using Distributed
 using Snarl.Launcher
+using Snarl.Logger
+
 launch_test_workers()
 
 @everywhere using Snarl.Launched
+
 launched()
 
-@everywhere using Base.Threads
-@everywhere using Distributed
+@send_everywhere base_time base_time
+@send_everywhere log_level log_level
 
-@everywhere function run_query()::Tuple{Int,AbstractArray{Int,1}}
-    return nprocs(), threads_count_of_processes
+@everywhere begin
+    using Base.Threads
+    using Distributed
+    using Logging
+    using Snarl.Logger
+
+    global_logger(SnarlLogger(
+        stderr,
+        min_level = log_level,
+        base_time = base_time,
+        flush = true,
+    ))
+    @debug "Launched"
+
+    function run_query()::Tuple{Int,AbstractArray{Int,1}}
+        return nprocs(), threads_count_of_processes
+    end
 end
 
 function check_query_results(query_result::Tuple{Int,AbstractArray{Int,1}})::Nothing
