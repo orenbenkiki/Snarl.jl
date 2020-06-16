@@ -1,10 +1,10 @@
 using Dates
 
 using Distributed
+using Snarl.DistributedLogging
 using Snarl.Launcher
-using Snarl.Logger
 
-@info "Launch workers..."
+println(stderr, "Launch workers...")
 
 launch_test_workers()
 
@@ -14,18 +14,18 @@ launched()
 
 @send_everywhere base_time base_time
 @send_everywhere log_level log_level
+@send_everywhere log_channel log_channel
 
 @everywhere begin
     using Base.Threads
     using Distributed
     using Logging
-    using Snarl.Logger
+    using Snarl.DistributedLogging
 
-    global_logger(SnarlLogger(
-        stderr,
+    global_logger(DistributedLogger(
+        log_channel,
         min_level = log_level,
         base_time = base_time,
-        flush = true,
     ))
     @debug "Launched"
 
