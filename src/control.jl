@@ -404,13 +404,13 @@ function d_foreach_more_than_nprocs(
 )::Nothing
     @assert batches_count > nprocs()
 
-    jobs_channel = RemoteChannel(() -> Channel{Any}(batches_count + nprocs()))
+    batches_channel = RemoteChannel(() -> Channel{Any}(batches_count))
 
     @sync begin
         next_batch_index = 1
         for worker_id in workers()
-            @spawnat worker_id s_run_batches_from_jobs_channel(
-                jobs_channel,
+            @spawnat worker_id s_run_from_batches_channel(
+                batches_channel,
                 step,
                 storage,
                 batch_values_view(values, batch_size, next_batch_index),
@@ -419,18 +419,18 @@ function d_foreach_more_than_nprocs(
             next_batch_index += 1
         end
 
-        send_jobs_batches(
-            jobs_channel,
+        send_batches(
+            batches_channel,
             values,
             batch_size,
             next_batch_index + 1,
             batches_count,
         )
-        send_jobs_terminations(jobs_channel, nprocs())
-        close(jobs_channel)
+        send_terminations(batches_channel, nprocs())
+        close(batches_channel)
 
-        s_run_batches_from_jobs_channel(
-            jobs_channel,
+        s_run_from_batches_channel(
+            batches_channel,
             step,
             storage,
             batch_values_view(values, batch_size, next_batch_index),
@@ -450,7 +450,7 @@ function dt_foreach_maximize_processes(
     simd::SimdFlag,
 )::Nothing
     used_threads_count = min(batches_count, total_threads_count)
-    jobs_channel = RemoteChannel(() -> Channel{Any}(batches_count + used_threads_count))
+    batches_channel = RemoteChannel(() -> Channel{Any}(batches_count))
     used_threads_of_processes = compute_used_threads_of_processes(used_threads_count)
 
     next_batch_index = 1
@@ -459,8 +459,8 @@ function dt_foreach_maximize_processes(
             process != myid() || continue
             @inbounds used_threads_of_process = used_threads_of_processes[process]
             used_threads_of_process > 0 || continue
-            @spawnat process t_run_batches_from_jobs_channel(
-                jobs_channel,
+            @spawnat process t_run_from_batches_channel(
+                batches_channel,
                 used_threads_of_process,
                 step,
                 storage,
@@ -479,18 +479,18 @@ function dt_foreach_maximize_processes(
         @assert used_threads_of_process > 0
         @threads for index = 1:used_threads_of_process
             if index == used_threads_of_process
-                send_jobs_batches(
-                    jobs_channel,
+                send_batches(
+                    batches_channel,
                     values,
                     batch_size,
-                    next_batch_index + used_threads_of_process,
+                    next_batch_index + index,
                     batches_count,
                 )
-                send_jobs_terminations(jobs_channel, used_threads_count)
-                close(jobs_channel)
+                send_terminations(batches_channel, used_threads_count)
+                close(batches_channel)
             end
-            s_run_batches_from_jobs_channel(
-                jobs_channel,
+            s_run_from_batches_channel(
+                batches_channel,
                 step,
                 storage,
                 batch_values_view(values, batch_size, next_batch_index + index - 1),
@@ -661,8 +661,7 @@ function t_collect(
 
     pending_threads = get_per_process(storage, "_pending_threads")
     @assert length(pending_threads) == 1
-    @assert @inbounds pending_threads[1] == 1
-    return get_per_thread(storage, into, 1)
+    return get_per_thread(storage, into, pending_threads[1])
 end
 
 function t_collect_up_to_nthreads(
@@ -837,32 +836,32 @@ end
 
 # Sending:
 
-function send_jobs_batches(
-    jobs_channel::RemoteChannel{Channel{Any}},
+function send_batches(
+    batches_channel::RemoteChannel{Channel{Any}},
     values,
     batch_size::Number,
     first_batch_index::Int,
     last_batch_index::Int,
 )::Nothing
     for batch_index = first_batch_index:last_batch_index
-        put!(jobs_channel, batch_values_view(values, batch_size, batch_index))
+        put!(batches_channel, batch_values_view(values, batch_size, batch_index))
     end
 end
 
-function send_jobs_terminations(
-    jobs_channel::RemoteChannel{Channel{Any}},
+function send_terminations(
+    batches_channel::RemoteChannel{Channel{Any}},
     terminations_count::Int,
 )::Nothing
     for _ = 1:terminations_count
-        put!(jobs_channel, nothing)
+        put!(batches_channel, nothing)
     end
     return nothing
 end
 
 # Serving:
 
-function s_run_batches_from_jobs_channel(
-    jobs_channel::RemoteChannel{Channel{Any}},
+function s_run_from_batches_channel(
+    batches_channel::RemoteChannel{Channel{Any}},
     step::Function,
     storage::ParallelStorage,
     batch_values,
@@ -870,14 +869,14 @@ function s_run_batches_from_jobs_channel(
 )::Nothing
     while batch_values != nothing
         s_foreach(step, storage, batch_values, simd = simd)
-        batch_values = take!(jobs_channel)
+        batch_values = take!(batches_channel)
     end
 
     return nothing
 end
 
-function t_run_batches_from_jobs_channel(
-    jobs_channel::Distributed.RemoteChannel{Channel{Any}},
+function t_run_from_batches_channel(
+    batches_channel::Distributed.RemoteChannel{Channel{Any}},
     threads_count::Int,
     step::Function,
     storage::ParallelStorage,
@@ -886,8 +885,8 @@ function t_run_batches_from_jobs_channel(
 )::Nothing
     @assert length(batch_values) == threads_count
     @sync @threads for index = 1:threads_count
-        s_run_batches_from_jobs_channel(
-            jobs_channel,
+        s_run_from_batches_channel(
+            batches_channel,
             step,
             storage,
             batch_values[index],

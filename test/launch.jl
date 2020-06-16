@@ -4,6 +4,8 @@ using Distributed
 using Snarl.Launcher
 using Snarl.Logger
 
+@info "Launch workers..."
+
 launch_test_workers()
 
 @everywhere using Snarl.Launched
@@ -48,7 +50,7 @@ function check_query_results(query_result::Tuple{Int,AbstractArray{Int,1}})::Not
     return nothing
 end
 
-@testset "launch" begin
+@test_set "launch" begin
     @test nthreads() > 1
     @test nprocs() > 1
     @test nworkers() == test_workers_count

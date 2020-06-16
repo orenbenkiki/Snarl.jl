@@ -52,7 +52,7 @@ end
 
 function affinity() end
 
-@testset "affinity" begin
+@test_set "affinity" begin
     @test nthreads() > 1
 
     recurse(threadid(), 1, MersenneTwister(123456))

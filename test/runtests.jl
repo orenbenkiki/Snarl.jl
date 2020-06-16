@@ -3,8 +3,24 @@ using Logging
 using Test
 using Snarl.Logger
 
+function base_args_contain(value::AbstractString)
+    return findfirst(Base.ARGS .== value) != nothing
+end
+
+macro test_set(args...)
+    if length(Base.ARGS) == 0 || base_args_contain(args[1])
+        @info args[1]
+        return :(@testset $(args...))
+    end
+end
+
 base_time = now()
-log_level = Logging.Info
+
+if base_args_contain("--debug") || base_args_contain("-d")
+    log_level = Logging.Debug
+else
+    log_level = Logging.Info
+end
 
 global_logger(SnarlLogger(
     stderr,
@@ -13,11 +29,6 @@ global_logger(SnarlLogger(
     flush = true,
 ))
 
-@info "Affinity tests"
 include("affinity.jl")
-
-@info "Launch tests"
 include("launch.jl")
-
-@info "Control tests"
 include("control.jl")

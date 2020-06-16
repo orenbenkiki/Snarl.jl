@@ -3,6 +3,8 @@
 @everywhere using Snarl.Launched
 @everywhere using Snarl.Storage
 
+@info "Configure workers..."
+
 const steps_count = 100
 
 @everywhere const UNIQUE = 1
@@ -100,7 +102,7 @@ end
     run_step::ContextTrackers
     run_make_accumulator::ContextTrackers
     run_collect_step::ContextTrackers
-    run_merge_accumulators::ContextTrackers
+    run_collect_merge::ContextTrackers
 
     per_process::ContextTrackers
     per_thread::ContextTrackers
@@ -126,7 +128,7 @@ function clear!(trackers::Trackers)::Nothing
     clear!(trackers.run_step)
     clear!(trackers.run_make_accumulator)
     clear!(trackers.run_collect_step)
-    clear!(trackers.run_merge_accumulators)
+    clear!(trackers.run_collect_merge)
 
     clear!(trackers.per_process)
     clear!(trackers.per_thread)
@@ -241,11 +243,11 @@ function check_s_foreach(; flags...)::Nothing
     return nothing
 end
 
-@testset "s_foreach/default" begin
+@test_set "s_foreach/default" begin
     check_s_foreach()
 end
 
-@testset "s_foreach/simd/invalid" begin
+@test_set "s_foreach/simd/invalid" begin
     @test_throws ArgumentError s_foreach(
         tracked_step,
         foreach_resources(),
@@ -254,10 +256,10 @@ end
     )
 end
 
-@testset "s_foreach/simd/true" begin
+@test_set "s_foreach/simd/true" begin
     check_s_foreach(simd = true)
 end
-@testset "s_foreach/simd/false" begin
+@test_set "s_foreach/simd/false" begin
     check_s_foreach(simd = false)
 end
 
@@ -272,22 +274,22 @@ function check_t_foreach(; expected_used_threads::Int = nthreads(), flags...)::N
     return nothing
 end
 
-@testset "t_foreach/default" begin
+@test_set "t_foreach/default" begin
     check_t_foreach()
 end
 
-@testset "t_foreach/batch_factor/one" begin
+@test_set "t_foreach/batch_factor/one" begin
     check_t_foreach(batch_factor = 1)
 end
-@testset "t_foreach/batch_factor/many" begin
+@test_set "t_foreach/batch_factor/many" begin
     check_t_foreach(batch_factor = typemax(Int))
 end
 
-@testset "t_foreach/minimal_batch/half" begin
+@test_set "t_foreach/minimal_batch/half" begin
     check_t_foreach(expected_used_threads = 2, minimal_batch = div(steps_count, 2))
 end
 
-@testset "t_foreach/minimal_batch/all" begin
+@test_set "t_foreach/minimal_batch/all" begin
     check_t_foreach(expected_used_threads = 1, minimal_batch = typemax(Int))
 end
 
@@ -337,23 +339,23 @@ function check_d_foreach(; expected_used_processes::Int = nprocs(), flags...)::N
     return nothing
 end
 
-@testset "d_foreach/default" begin
+@test_set "d_foreach/default" begin
     check_d_foreach()
 end
 
-@testset "d_foreach/batch_factor/one" begin
+@test_set "d_foreach/batch_factor/one" begin
     check_d_foreach(batch_factor = 1)
 end
 
-@testset "d_foreach/batch_factor/many" begin
+@test_set "d_foreach/batch_factor/many" begin
     check_d_foreach(batch_factor = typemax(Int))
 end
 
-@testset "d_foreach/minimal_batch/half" begin
+@test_set "d_foreach/minimal_batch/half" begin
     check_d_foreach(expected_used_processes = 2, minimal_batch = div(steps_count, 2))
 end
 
-@testset "d_foreach/minimal_batch/all" begin
+@test_set "d_foreach/minimal_batch/all" begin
     check_d_foreach(expected_used_processes = 1, minimal_batch = typemax(Int))
 end
 
@@ -396,7 +398,7 @@ function check_dt_foreach(;
     return nothing
 end
 
-@testset "dt_foreach/distribution/invalid" begin
+@test_set "dt_foreach/distribution/invalid" begin
     @test_throws ArgumentError dt_foreach(
         tracked_step,
         foreach_resources(),
@@ -405,11 +407,11 @@ end
     )
 end
 
-@testset "dt_foreach/default" begin
+@test_set "dt_foreach/default" begin
     check_dt_foreach()
 end
 
-@testset "dt_foreach/minimal_batch/one" begin
+@test_set "dt_foreach/minimal_batch/one" begin
     check_dt_foreach(
         expected_used_processes = 1,
         expected_used_threads = 1,
@@ -417,7 +419,7 @@ end
     )
 end
 
-@testset "dt_foreach/minimal_batch/many/maximize_processes" begin
+@test_set "dt_foreach/minimal_batch/many/maximize_processes" begin
     check_dt_foreach(
         expected_used_processes = nprocs(),
         expected_used_threads = nprocs(),
@@ -426,7 +428,7 @@ end
     )
 end
 
-@testset "dt_foreach/minimal_batch/many/minimize_processes" begin
+@test_set "dt_foreach/minimal_batch/many/minimize_processes" begin
     check_dt_foreach(
         expected_used_processes = 1,
         expected_used_threads = nthreads(),
@@ -435,7 +437,7 @@ end
     )
 end
 
-@testset "dt_foreach/minimal_batch/half/maximize_processes" begin
+@test_set "dt_foreach/minimal_batch/half/maximize_processes" begin
     check_dt_foreach(
         expected_used_processes = nprocs(),
         expected_used_threads = nprocs(),
@@ -444,7 +446,7 @@ end
     )
 end
 
-@testset "dt_foreach/minimal_batch/half/minimize_processes" begin
+@test_set "dt_foreach/minimal_batch/half/minimize_processes" begin
     minimal_batch = ceil(Int, steps_count / (2 * nthreads()))
     check_dt_foreach(
         expected_used_processes = 2,
@@ -467,20 +469,23 @@ function track_make_accumulator()::Accumulator
     return accumulator
 end
 
-function track_collect(accumulator::Accumulator, step_index::Int)::Nothing
+function tracked_collect(accumulator::Accumulator, step_index::Int)::Nothing
     track_context(trackers.run_collect_step, step_index, OperationContext())
     accumulator.count += 1
     accumulator.sum += step_index
+    @debug "collect step" unique = accumulator.unique sum = accumulator.sum step_index
     return nothing
 end
 
-function track_collect(
+function tracked_collect(
     into_accumulator::Accumulator,
     from_accumulator::Accumulator,
 )::Nothing
-    track_context(trackers.run_merge_accumulators, next!(MERGE), OperationContext())
+    track_context(trackers.run_collect_merge, next!(MERGE), OperationContext())
     into_accumulator.count += from_accumulator.count
     into_accumulator.sum += from_accumulator.sum
+    @debug "collect merge" unique = into_accumulator.unique sum = into_accumulator.sum from =
+        from_accumulator.unique
     return nothing
 end
 
@@ -502,13 +507,13 @@ function check_used_accumulators(expected_used_accumulators::Int)::Nothing
     return nothing
 end
 
-function check_used_merges(expected_used_merges::Int)::Nothing
+function check_used_merges(expected_used_merged::Int)::Nothing
     @views check_same_values(
-        trackers.run_merge_accumulators.process[1:expected_used_merges],
+        trackers.run_collect_merge.process[1:expected_used_merged],
         myid(),
     )
     @views check_same_values(
-        trackers.run_merge_accumulators.process[expected_used_merges+1:steps_count],
+        trackers.run_collect_merge.process[expected_used_merged+1:steps_count],
         0,
     )
     return nothing
@@ -516,7 +521,7 @@ end
 
 function run_collect(collect::Function; flags...)::Nothing
     accumulated = collect(
-        track_collect,
+        tracked_collect,
         tracked_step,
         collect_resources(),
         1:steps_count;
@@ -541,7 +546,7 @@ function check_s_collect(; flags...)::Nothing
     return nothing
 end
 
-@testset "s_collect/default" begin
+@test_set "s_collect/default" begin
     check_s_collect()
 end
 
@@ -558,22 +563,22 @@ function check_t_collect(; expected_used_threads = nthreads(), flags...)::Nothin
     return nothing
 end
 
-@testset "t_collect/default" begin
+@test_set "t_collect/default" begin
     check_t_collect()
 end
 
-@testset "t_collect/batch_factor/one" begin
+@test_set "t_collect/batch_factor/one" begin
     check_t_collect(batch_factor = 1)
 end
 
-@testset "t_collect/batch_factor/many" begin
+@test_set "t_collect/batch_factor/many" begin
     check_t_collect(batch_factor = typemax(Int))
 end
 
-@testset "t_collect/minimal_batch/half" begin
+@test_set "t_collect/minimal_batch/half" begin
     check_t_collect(expected_used_threads = 2, minimal_batch = div(steps_count, 2))
 end
 
-@testset "t_collect/minimal_batch/all" begin
+@test_set "t_collect/minimal_batch/all" begin
     check_t_collect(expected_used_threads = 1, minimal_batch = typemax(Int))
 end
