@@ -3,6 +3,8 @@
 @everywhere using Snarl.Launched
 @everywhere using Snarl.Storage
 
+@everywhere import Snarl.Storage: clear!
+
 @info "Configure workers..."
 
 const steps_count = 100
@@ -154,7 +156,6 @@ end
 
 @everywhere function tracked_step(storage::ParallelStorage, step_index::Int)::Int
     @debug "step" step_index
-    # sleep(0.001)
 
     per_step_context = get_per_step(storage, "context")
     @assert per_step_context.resets > 0
@@ -228,7 +229,9 @@ function foreach_storage()::ParallelStorage
 end
 
 function run_foreach(foreach::Function; flags...)::Nothing
-    foreach(tracked_step, foreach_storage(), 1:steps_count; flags...)
+    storage = foreach_storage()
+    foreach(tracked_step, storage, 1:steps_count; flags...)
+    forget!(storage)
     return nothing
 end
 
@@ -472,7 +475,7 @@ end
 
 function tracked_collect(storage::ParallelStorage, step_index::Int)::Nothing
     track_context(trackers.run_collect_step, step_index, OperationContext())
-    accumulator = get_per_thread(storage, "accumulator")
+    accumulator = get_per_thread(storage, "accumulate_results")
     accumulator.count += 1
     accumulator.sum += step_index
     @debug "collect step" step_index unique = accumulator.unique sum = accumulator.sum
@@ -482,8 +485,8 @@ end
 function tracked_collect(from_thread::Int, storage::ParallelStorage)::Nothing
     @assert from_thread != threadid()
     track_context(trackers.run_collect_merge, next!(MERGE), OperationContext())
-    from_accumulator = get_per_thread(storage, "accumulator", from_thread)
-    into_accumulator = get_per_thread(storage, "accumulator")
+    from_accumulator = get_per_thread(storage, "accumulate_results", from_thread)
+    into_accumulator = get_per_thread(storage, "accumulate_results")
     into_accumulator.count += from_accumulator.count
     into_accumulator.sum += from_accumulator.sum
     @debug "collect merge" unique = into_accumulator.unique sum = into_accumulator.sum from =
@@ -493,7 +496,7 @@ end
 
 function collect_storage()::ParallelStorage
     storage = foreach_storage()
-    add_per_thread!(storage, "accumulator", make = track_make_accumulator)
+    add_per_thread!(storage, "accumulate_results", make = track_make_accumulator)
     return storage
 end
 
@@ -524,9 +527,11 @@ end
 function run_collect(collect::Function; flags...)::Nothing
     storage = collect_storage()
     collect(tracked_collect, tracked_step, storage, 1:steps_count; flags...)
-    accumulator = get_per_thread(storage, "accumulator")
+    accumulator = get_per_thread(storage, "accumulate_results")
     @test accumulator.count == steps_count
     @test accumulator.sum == round(Int, steps_count * (steps_count + 1) / 2)
+    clear_accumulators!(storage)
+    forget_accumulators!(storage)
     return nothing
 end
 

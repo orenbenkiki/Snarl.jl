@@ -15,6 +15,7 @@ export default_batch_factor,
     default_minimal_batch_size, default_maximize_distribution, default_simd
 export s_foreach, t_foreach, d_foreach, dt_foreach
 export s_collect, t_collect, d_collect, dt_collect
+export clear_accumulators!, forget_accumulators!
 
 # Data types:
 
@@ -104,7 +105,9 @@ end
 function next_workers!(workers_count::Int)::Array{Int,1}
     @assert 1 <= workers_count && workers_count <= nworkers()
     if workers_count == nworkers()
-        return 2:nprocs()
+        worker_ids = [1:nprocs();]
+        deleteat!(worker_ids, myid())
+        return worker_ids
     end
 
     worker_ids = Array{Int,1}(undef, workers_count)
@@ -375,12 +378,15 @@ function d_foreach_up_to_nprocs(
     @sync begin
         worker_ids = next_workers!(batches_count - 1)
         for batch_index = 1:(batches_count-1)
-            @spawnat worker_ids[batch_index] s_foreach(
-                step,
-                storage,
-                batch_values_view(values, batch_size, batch_index),
-                simd = simd,
-            )
+            @spawnat worker_ids[batch_index] begin
+                s_foreach(
+                    step,
+                    storage,
+                    batch_values_view(values, batch_size, batch_index),
+                    simd = simd,
+                )
+                forget!(storage)
+            end
         end
 
         s_foreach(
@@ -408,14 +414,18 @@ function d_foreach_more_than_nprocs(
 
     @sync begin
         next_batch_index = 1
-        for worker_id in workers()
-            @spawnat worker_id s_run_from_batches_channel(
-                batches_channel,
-                step,
-                storage,
-                batch_values_view(values, batch_size, next_batch_index),
-                simd,
-            )
+        worker_ids = next_workers!(nworkers())
+        for worker_id in worker_ids
+            @spawnat worker_id begin
+                s_run_from_batches_channel(
+                    batches_channel,
+                    step,
+                    storage,
+                    batch_values_view(values, batch_size, next_batch_index),
+                    simd,
+                )
+                forget!(storage)
+            end
             next_batch_index += 1
         end
 
@@ -612,12 +622,13 @@ threads.
 
 To manage this, a per-process `_threads_collection` value is used through the collection.
 
-This builds on `s_collect` to accumulate results in each thread. In addition for invoking
-`collect(storage, step(...))` in each thread, this will also invoke `collect(from_thread, storage)`
-which is expected to collect the per-thread accumulator(s) of `from_thread` into the
-per-current-thread accumulator(s) of the `storage`. The order of parameters in this case is
-intentionally reversed to allow for deterministic dispatch distinguishing between collecting an
-integer step result, and collecting accumulated results from a different thread.
+This builds on `s_collect` to accumulate results in each thread. The results are expected to be
+stored in per-thread storage values with names starting with "accumulate_". To collect the final
+results, this will invoke `collect(from_thread, storage)` which is expected to collect the
+per-thread accumulator(s) of `from_thread` into the per-current-thread accumulator(s) of the
+`storage`. The order of parameters in this case is intentionally reversed to allow for deterministic
+dispatch distinguishing between collecting an integer step result, and collecting accumulated
+results from a different thread.
 
 The final `collect` will always be in the current thread so that the per-current-thread
 accumulator(s) in the `storage` will contain the final result when `t_collect` returns.
@@ -656,29 +667,31 @@ function t_collect(
         ),
     )
 
-    if batches_count <= nthreads()
-        t_collect_up_to_nthreads(
-            collect,
-            step,
-            storage,
-            values,
-            batch_size,
-            batches_count,
-            simd,
-        )
-    else
-        t_collect_more_than_nthreads(
-            collect,
-            step,
-            storage,
-            values,
-            batch_size,
-            batches_count,
-            simd,
-        )
+    try
+        if batches_count <= nthreads()
+            t_collect_up_to_nthreads(
+                collect,
+                step,
+                storage,
+                values,
+                batch_size,
+                batches_count,
+                simd,
+            )
+        else
+            t_collect_more_than_nthreads(
+                collect,
+                step,
+                storage,
+                values,
+                batch_size,
+                batches_count,
+                simd,
+            )
+        end
+    finally
+        forget_per_process!(storage, "_threads_collection")
     end
-
-    forget_per_process!(storage, "_threads_collection")
 
     return nothing
 end
@@ -931,6 +944,52 @@ function t_run_batches(
 )::Nothing
     @sync @threads for index = 1:length(batch_values)
         s_foreach(step, storage, batch_values[index], simd = simd)
+    end
+
+    return nothing
+end
+
+# Storage:
+
+"""
+    clear_accumulators!(storage::ParallelStorage, thread_id::Int=0)
+
+Clear all or one of the accumulators of a storage. If a thread is specified, clear only the
+accumulators for that thread. If a negative thread is specified, clear all the other threads but
+keep the accumulators for this one.
+
+A value is considered to be an accumulator if it is per-thread and its name begins with
+"accumulate_".
+"""
+function clear_accumulators!(storage::ParallelStorage, thread_id::Int = 0)::Nothing
+    for name in keys(storage.per_thread)
+        if startswith(name, "accumulate_")
+            clear_per_thread!(storage, name, thread_id)
+        end
+    end
+    return nothing
+end
+
+"""
+    forget_accumulators!(storage::ParallelStorage)
+
+Clear and forget all the accumulator values of a storage.
+
+A value is considered to be an accumulator if it is per-thread and its name begins with
+"accumulate_".
+"""
+function forget_accumulators!(storage::ParallelStorage)::Nothing
+    names = Array{AbstractString,1}(undef, 0)
+    sizehint!(names, length(storage.per_thread))
+
+    for name in keys(storage.per_thread)
+        if startswith(name, "accumulate_")
+            push!(names, name)
+        end
+    end
+
+    for name in names
+        forget_per_thread!(storage, name)
     end
 
     return nothing

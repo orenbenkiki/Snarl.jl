@@ -3,7 +3,10 @@ Storage of values for parallel algorithms.
 """
 module Storage
 
+using Base.Threads
 import Base.Semaphore
+
+import Distributed: clear!
 
 export GlobalStorage, LocalStorage, ParallelStorage
 
@@ -202,7 +205,7 @@ mutable struct LocalStorage
         make::Union{Type,Function},
         clear::Union{Function,Nothing} = nothing,
         reset::Union{Function,Nothing} = nothing,
-    ) = new(make, reset, clear, Array{Any,1}(nothing, Threads.nthreads()))
+    ) = new(make, reset, clear, Array{Any,1}(nothing, nthreads()))
 end
 
 """
@@ -212,7 +215,7 @@ Get the value of a local storage for the specified thread (by default, the curre
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_value(storage::LocalStorage, thread_id = Threads.threadid())::Any
+function get_value(storage::LocalStorage, thread_id = threadid())::Any
     value = @inbounds storage.values[thread_id]
     if value == nothing
         @assert storage.make != nothing "Getting missing LocalStorage without a make function"
@@ -228,35 +231,47 @@ end
 """
     clear!(storage::LocalStorage, [thread_id=0])
 
-Clear all or one of the values of a local storage. If a thread is specified, will clear only the
-value for that thread.
+Clear all or one of the values of a local storage. If a thread is specified, clear only the value
+for that thread. If a negative thread is specified, clear all the other threads but keep the value
+for this one.
 
-At minimum, this will allow the values to be garbage collected. If a `clear` function was
+At minimum, this will allow the value(s) to be garbage collected. If a `clear` function was
 registered, it can release associated non-memory resources, e.g. closing files.
 
 This is never invoked implicitly. It is only done if explicitly invoked. That is, this
 is not a "destructor".
 """
 function clear!(storage::LocalStorage, thread_id::Int = 0)::Nothing
-    if thread_id == 0  # Not tested
-        if storage.clear != nothing  # Not tested
+    @assert -nthreads() <= thread_id && thread_id <= nthreads()
+
+    if thread_id == 0
+        if storage.clear != nothing
             for value in storage.values  # Not tested
                 if value != nothing  # Not tested
                     storage.clear(value)  # Not tested
                 end
             end
         end
-        storage.values[:] = nothing  # Not tested
+        storage.values[:] .= nothing
 
-    else
+    elseif thread_id > 0  # Not tested
         value = storage.values[thread_id]  # Not tested
-        storage.values[thread_id] = nothing  # Not tested
+        @inbounds storage.values[thread_id] = nothing  # Not tested
         if value != nothing && storage.clear != nothing  # Not tested
             storage.clear(value)  # Not tested
         end
+    else
+        for clear_thread_id = 1:nthreads()  # Not tested
+            clear_thread_id != -thread_id || continue  # Not tested
+            @inbounds value = storage.values[clear_thread_id]  # Not tested
+            @inbounds storage.values[clear_thread_id] = nothing  # Not tested
+            if value != nothing && storage.clear != nothing  # Not tested
+                storage.clear(value)  # Not tested
+            end
+        end
     end
 
-    return nothing  # Not tested
+    return nothing
 end
 
 """
@@ -266,7 +281,7 @@ This provides a generic storage which allows accessing each value by its scope a
 are created lazily, when threads actually request them. This allows the value creation to be
 parallel.
 """
-struct ParallelStorage
+mutable struct ParallelStorage
     """
     A generic container for the per-process (global) values.
 
@@ -405,11 +420,7 @@ then their modifications to the value will be visible in following steps.
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_per_thread(
-    storage::ParallelStorage,
-    name::String,
-    thread_id = Threads.threadid(),
-)::Any
+function get_per_thread(storage::ParallelStorage, name::String, thread_id = threadid())::Any
     return get_value(storage.per_thread[name], thread_id)
 end
 
@@ -423,11 +434,7 @@ be visible in following steps.
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_per_step(
-    storage::ParallelStorage,
-    name::String,
-    thread_id = Threads.threadid(),
-)::Any
+function get_per_step(storage::ParallelStorage, name::String, thread_id = threadid())::Any
     return get_value(storage.per_step[name], thread_id)
 end
 
@@ -450,8 +457,9 @@ end
 """
     clear_per_thread!(storage::LocalStorage, name::String, [thread_id::Int])
 
-Clear all or one of the values of a per-thread storage. If a thread is specified, will clear only
-the value for that thread.
+Clear all or one of the values of a per-thread storage. If a thread is specified, clear only the
+value for that thread. If a negative thread is specified, clear all the other threads but keep the
+value for this one.
 
 At minimum, this will allow the value(s) to be garbage collected. If a `clear` function was
 registered, it can release associated non-memory resources, e.g. closing files.
@@ -460,15 +468,16 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 is not a "destructor".
 """
 function clear_per_thread!(storage::ParallelStorage, name::String, thread_id = 0)::Nothing
-    clear!(storage.per_thread[name], thread_id)  # Not tested
-    return nothing  # Not tested
+    clear!(storage.per_thread[name], thread_id)
+    return nothing
 end
 
 """
     clear_per_step!(storage::LocalStorage, name::String, [thread_id::Int])
 
-Clear all or one of the values of a per-step storage. If a thread is specified, will clear only
-the value for that thread.
+Clear all or one of the values of a per-step storage. If a thread is specified, clear only the value
+for that thread. If a negative thread is specified, clear all the other threads but keep the value
+for this one.
 
 At minimum, this will allow the value(s) to be garbage collected. If a `clear` function was
 registered, it can release associated non-memory resources, e.g. closing files.
@@ -493,11 +502,19 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 is not a "destructor".
 """
 function clear!(storage::ParallelStorage)::Nothing
-    clear!(storage.per_process)  # Not tested
-    clear!(storage.per_thread)  # Not tested
-    clear!(storage.per_step)  # Not tested
+    for global_storage in values(storage.per_process)
+        clear!(global_storage)
+    end
 
-    return nothing  # Not tested
+    for local_storage in values(storage.per_thread)
+        clear!(local_storage)
+    end
+
+    for local_storage in values(storage.per_step)
+        clear!(local_storage)
+    end
+
+    return nothing
 end
 
 """
@@ -517,9 +534,9 @@ end
 Clear all of the values of a per-thread storage and completely forget it.
 """
 function forget_per_thread!(storage::ParallelStorage, name::String)::Nothing
-    clear!(storage.per_thread[name], thread_id)  # Not tested
-    delete!(storage.per_thread, name)  # Not tested
-    return nothing  # Not tested
+    clear!(storage.per_thread[name])
+    delete!(storage.per_thread, name)
+    return nothing
 end
 
 """
@@ -539,13 +556,13 @@ end
 Clear and forget all the values.
 """
 function forget!(storage::ParallelStorage)::Nothing
-    clear!(storage)  # Not tested
+    clear!(storage)
 
-    storage.per_process = Dict{String,Any}()  # Not tested
-    storage.per_thread = Dict{String,Any}()  # Not tested
-    storage.per_step = Dict{String,Any}()  # Not tested
+    storage.per_process = Dict{String,Any}()
+    storage.per_thread = Dict{String,Any}()
+    storage.per_step = Dict{String,Any}()
 
-    return nothing  # Not tested
+    return nothing
 end
 
 end # module
