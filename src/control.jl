@@ -678,6 +678,8 @@ function t_collect(
         )
     end
 
+    forget_per_process!(storage, "_threads_collection")
+
     return nothing
 end
 

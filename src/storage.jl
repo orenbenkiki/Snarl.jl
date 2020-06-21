@@ -7,8 +7,10 @@ import Base.Semaphore
 
 export GlobalStorage, LocalStorage, ParallelStorage
 
-export add_per_process!, add_per_step!, add_per_thread!, clear!
+export add_per_process!, add_per_step!, add_per_thread!
 export get_per_process, get_per_step, get_per_thread, get_semaphore, get_value
+export clear_per_process!, clear_per_thread!, clear_per_step!, clear!
+export forget_per_process!, forget_per_thread!, forget_per_step!, forget!
 export with_per_process, with_value
 
 """
@@ -129,20 +131,22 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 "destructor".
 """
 function clear!(storage::GlobalStorage)::Nothing
-    if storage.value != nothing  # Not tested
-        Base.acquire(storage.semaphore)  # Not tested
+    value = storage.value
+    if value != nothing
+        Base.acquire(storage.semaphore)
         try
-            if storage.value != nothing  # Not tested
-                if storage.clear != nothing  # Not tested
-                    storage.clear(storage.value)  # Not tested
-                end
-                storage.value = nothing  # Not tested
-            end
+            value = storage.value
+            storage.value = nothing
         finally
-            Base.release(storage.semaphore)  # Not tested
+            Base.release(storage.semaphore)
         end
     end
-    return nothing  # Not tested
+
+    if value != nothing && storage.clear != nothing
+        storage.clear(value)  # Not tested
+    end
+
+    return nothing
 end
 
 """
@@ -222,7 +226,10 @@ function get_value(storage::LocalStorage, thread_id = Threads.threadid())::Any
 end
 
 """
-Clear the values of a local storage.
+    clear!(storage::LocalStorage, [thread_id=0])
+
+Clear all or one of the values of a local storage. If a thread is specified, will clear only the
+value for that thread.
 
 At minimum, this will allow the values to be garbage collected. If a `clear` function was
 registered, it can release associated non-memory resources, e.g. closing files.
@@ -230,15 +237,25 @@ registered, it can release associated non-memory resources, e.g. closing files.
 This is never invoked implicitly. It is only done if explicitly invoked. That is, this
 is not a "destructor".
 """
-function clear!(storage::LocalStorage)::Nothing
-    if storage.clear != nothing  # Not tested
-        for value in storage.values  # Not tested
-            if value != nothing  # Not tested
-                storage.clear(value)  # Not tested
+function clear!(storage::LocalStorage, thread_id::Int = 0)::Nothing
+    if thread_id == 0  # Not tested
+        if storage.clear != nothing  # Not tested
+            for value in storage.values  # Not tested
+                if value != nothing  # Not tested
+                    storage.clear(value)  # Not tested
+                end
             end
         end
+        storage.values[:] = nothing  # Not tested
+
+    else
+        value = storage.values[thread_id]  # Not tested
+        storage.values[thread_id] = nothing  # Not tested
+        if value != nothing && storage.clear != nothing  # Not tested
+            storage.clear(value)  # Not tested
+        end
     end
-    storage.values[:] = nothing  # Not tested
+
     return nothing  # Not tested
 end
 
@@ -399,25 +416,78 @@ end
 """
     get_per_step(storage::ParallelStorage, name::String)
 
-Obtain the value of a per-step value from the storage by its name. The value will be created if
-necessary (once per thread), and will be reset every time it is fetched, so that modifications by
-previous steps in the same thread will not be visible in following steps.
+Obtain the value of a per-step value from the storage by its name, for the specified thread (by
+default, the current one). The value will be created if necessary (once per thread), and will be
+reset every time it is fetched, so that modifications by previous steps in the same thread will not
+be visible in following steps.
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_per_step(storage::ParallelStorage, name::String)::Any
-    return get_value(storage.per_step[name])
+function get_per_step(
+    storage::ParallelStorage,
+    name::String,
+    thread_id = Threads.threadid(),
+)::Any
+    return get_value(storage.per_step[name], thread_id)
+end
+
+"""
+    clear_per_process!(storage::LocalStorage, name::String)
+
+Clear the value of a per-process value from the storage by its name.
+
+At minimum, this will allow the value to be garbage collected. If a `clear` function was
+registered, it can release associated non-memory resources, e.g. closing files.
+
+This is never invoked implicitly. It is only done if explicitly invoked. That is, this
+is not a "destructor".
+"""
+function clear_per_process!(storage::ParallelStorage, name::String)::Nothing
+    clear!(storage.per_process[name])  # Not tested
+    return nothing  # Not tested
+end
+
+"""
+    clear_per_thread!(storage::LocalStorage, name::String, [thread_id::Int])
+
+Clear all or one of the values of a per-thread storage. If a thread is specified, will clear only
+the value for that thread.
+
+At minimum, this will allow the value(s) to be garbage collected. If a `clear` function was
+registered, it can release associated non-memory resources, e.g. closing files.
+
+This is never invoked implicitly. It is only done if explicitly invoked. That is, this
+is not a "destructor".
+"""
+function clear_per_thread!(storage::ParallelStorage, name::String, thread_id = 0)::Nothing
+    clear!(storage.per_thread[name], thread_id)  # Not tested
+    return nothing  # Not tested
+end
+
+"""
+    clear_per_step!(storage::LocalStorage, name::String, [thread_id::Int])
+
+Clear all or one of the values of a per-step storage. If a thread is specified, will clear only
+the value for that thread.
+
+At minimum, this will allow the value(s) to be garbage collected. If a `clear` function was
+registered, it can release associated non-memory resources, e.g. closing files.
+
+This is never invoked implicitly. It is only done if explicitly invoked. That is, this
+is not a "destructor".
+"""
+function clear_per_step!(storage::ParallelStorage, name::String, thread_id = 0)::Nothing
+    clear!(storage.per_step[name], thread_id)  # Not tested
+    return nothing  # Not tested
 end
 
 """
     clear!(storage::ParallelStorage)
 
-Clear and forget all the values.
+Clear all the values.
 
 This releases all the values to the garbage collector, and also releases any associated non-memory
 resources, e.g. closing files.
-
-This also forgets the list of values, completely clearing the storage.
 
 This is never invoked implicitly. It is only done if explicitly invoked. That is, this
 is not a "destructor".
@@ -426,6 +496,50 @@ function clear!(storage::ParallelStorage)::Nothing
     clear!(storage.per_process)  # Not tested
     clear!(storage.per_thread)  # Not tested
     clear!(storage.per_step)  # Not tested
+
+    return nothing  # Not tested
+end
+
+"""
+    forget_per_process!(storage::LocalStorage, name::String)
+
+Clear and completely forget the value of a per-process value from the storage by its name.
+"""
+function forget_per_process!(storage::ParallelStorage, name::String)::Nothing
+    clear!(storage.per_process[name])
+    delete!(storage.per_process, name)
+    return nothing
+end
+
+"""
+    forget_per_thread!(storage::LocalStorage, name::String)
+
+Clear all of the values of a per-thread storage and completely forget it.
+"""
+function forget_per_thread!(storage::ParallelStorage, name::String)::Nothing
+    clear!(storage.per_thread[name], thread_id)  # Not tested
+    delete!(storage.per_thread, name)  # Not tested
+    return nothing  # Not tested
+end
+
+"""
+    forget_per_step!(storage::LocalStorage, name::String)
+
+Clear all of the values of a per-step storage and completely forget it.
+"""
+function forget_per_step!(storage::ParallelStorage, name::String)::Nothing
+    clear!(storage.per_step[name])  # Not tested
+    delete!(storage.per_step, name)  # Not tested
+    return nothing  # Not tested
+end
+
+"""
+    forget!(storage::ParallelStorage)
+
+Clear and forget all the values.
+"""
+function forget!(storage::ParallelStorage)::Nothing
+    clear!(storage)  # Not tested
 
     storage.per_process = Dict{String,Any}()  # Not tested
     storage.per_thread = Dict{String,Any}()  # Not tested
