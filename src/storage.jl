@@ -66,10 +66,10 @@ mutable struct GlobalStorage
         clear::Union{Function,Nothing} = nothing,
         value = nothing,
     )::GlobalStorage
-        if value == nothing  # Only seems untested
-            @assert make != nothing "GlobalStorage is missing both a make function and an initial value"  # Only seems untested
+        if value == nothing
+            @assert make != nothing "GlobalStorage is missing both a make function and an initial value"
         else
-            @assert make == nothing "GlobalStorage specifies both a make function and an initial value"  # Only seems untested
+            @assert make == nothing "GlobalStorage specifies both a make function and an initial value"
         end
         return new(make, clear, value, Semaphore(1))
     end
@@ -110,8 +110,8 @@ function with_value(body::Function, storage::GlobalStorage)::Any
     Base.acquire(storage.semaphore)
     try
         if storage.value == nothing
-            @assert storage.make != nothing "Getting missing GlobalStorage without a make function"
-            storage.value = storage.make()
+            @assert storage.make != nothing "Getting missing GlobalStorage without a make function"  # Not tested
+            storage.value = storage.make()  # Not tested
         end
         return body(storage.value)
     finally

@@ -135,8 +135,8 @@ process.
 This is implemented as a simple loop using the specified `simd`, which repeatedly invoked
 `step(storage, value)`. The return value of `step` is discarded.
 
-Having this makes it easier to convert a parallel loop to a serial one, for example for comparing
-parallel and serial performance.
+Having `s_foreach` makes it easier to convert a parallel loop to a serial one, for example for
+comparing parallel and serial performance.
 """
 function s_foreach(
     step::Function,
@@ -556,25 +556,30 @@ end
 # Collect:
 
 """
-    s_collect(collect::Function, step::Function, storage::ParallelStorage, values::collection;
-              into::AbstractString="accumulator", simd::SimdFlag=default_simd)
+    s_collect(collect::Function, step::Function, storage::ParallelStorage,
+              values::collection; simd::SimdFlag=default_simd)
 
 Perform `step` for each `value` in `values`, serially, using the current thread in the current
-process; `collect` the returned results into a single accumulator and return it.
+process; `collect` the returned results into per-current-thread accumulator(s) in the `storage`. The
+final results should be fetched from the `storage`.
 
 This is implemented as a simple loop using the specified `simd`, which repeatedly invokes
-`step(storage, value)`. The `collect(accumulator, step_result)` is likewise repeatedly invoked to
-accumulate the step results into a single per-thread value named (by default, `accumulator`). The
-return value of `collect` is ignored.
+`collect(storage, step(storage, value))`.
 
 !!! note
 
-    The accumulator must be mutable. This is different from the classical `reduce` operation which
-    takes two values and returns a merged result (possibly in different object). For example, to
-    perform a sum of integers using `collect`, define the accumulator to be an array with a single
-    entry.
+    Collection is different from reduction!
 
-Having this makes it easier to convert a parallel collection to a serial one, for example for
+    Collection always assumes the order of the collections does not matter, while reduction may
+    optionally require that reductions will always be of adjacent values. This makes it easier to
+    more efficiently parallelize collections.
+
+    The `collect` function takes a new value and injects it into mutable per-current-thread
+    `storage` accumulator(s), while a `reduce` function takes two values and returns a new separate
+    value. For example, to perform a sum of integers using `collect`, define the accumulator to be
+    an array with a single entry containing the sum.
+
+Having `s_collect` makes it easier to convert a parallel collection to a serial one, for example for
 comparing parallel and serial performance.
 """
 function s_collect(
@@ -582,43 +587,50 @@ function s_collect(
     step::Function,
     storage::ParallelStorage,
     values;
-    into::AbstractString = "accumulator",
     simd::SimdFlag = default_simd,
-)::Any
-    accumulator = get_per_thread(storage, into)
-
+)::Nothing
     s_foreach(storage, values, simd = simd) do storage, value
-        collect(accumulator, step(storage, value))
+        collect(storage, step(storage, value))
     end
+end
 
-    return accumulator
+mutable struct ThreadsCollection
+    main_thread_id::Int
+    pending_thread_id::Int
+    remaining_threads_count::Int
+    final_thread_id_channel::Channel{Int}
 end
 
 """
     t_collect(collect::Function, step::Function, storage::ParallelStorage, values::collection;
-              into::AbstractString="accumulator",
-              batch_factor::Int=default_batch_factor,
-              simd::SimdFlag=default_simd)
+              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
 
 Perform `step` for each `value` in `values`, in parallel, using multiple threads in the current
-process; `collect` the returned results into a single accumulator and return it. To manage this, a
-per-process `_pending_threads` value is added containing a stack (array) of pending thread
-identifiers (whose results were not collected yet).
+process; `collect` the returned results into per-thread storage. When done, collect the separate
+per-thread accumulator(s) into the per-current-thread accumulator(s) `storage`, again using multiple
+threads.
 
-This builds on `s_collect` to accumulate results in each thread. The per-thread accumulators are
-merged together (using multiple threads) by invoking `collect(into_accumulator, from_accumulator)`.
-The final result is returned.
+To manage this, a per-process `_threads_collection` value is used through the collection.
+
+This builds on `s_collect` to accumulate results in each thread. In addition for invoking
+`collect(storage, step(...))` in each thread, this will also invoke `collect(from_thread, storage)`
+which is expected to collect the per-thread accumulator(s) of `from_thread` into the
+per-current-thread accumulator(s) of the `storage`. The order of parameters in this case is
+intentionally reversed to allow for deterministic dispatch distinguishing between collecting an
+integer step result, and collecting accumulated results from a different thread.
+
+The final `collect` will always be in the current thread so that the per-current-thread
+accumulator(s) in the `storage` will contain the final result when `t_collect` returns.
 """
 function t_collect(
     collect::Function,
     step::Function,
     storage::ParallelStorage,
     values;
-    into::AbstractString = "accumulator",
     batch_factor::Int = default_batch_factor,
     minimal_batch::Int = 1,
     simd::SimdFlag = default_simd,
-)::Any
+)::Nothing
     batches_count, batch_size = batches_configuration(
         step,
         storage,
@@ -630,10 +642,19 @@ function t_collect(
     )
 
     if batches_count <= 1
-        return s_collect(collect, step, storage, values, into = into, simd = simd)
+        return s_collect(collect, step, storage, values, simd = simd)
     end
 
-    add_per_process!(storage, "_pending_threads", make = () -> Array{Int,1}(undef, 0))
+    add_per_process!(
+        storage,
+        "_threads_collection",
+        value = ThreadsCollection(
+            threadid(),
+            0,
+            min(batches_count, nthreads()),
+            Channel{Int}(1),
+        ),
+    )
 
     if batches_count <= nthreads()
         t_collect_up_to_nthreads(
@@ -643,7 +664,6 @@ function t_collect(
             values,
             batch_size,
             batches_count,
-            into,
             simd,
         )
     else
@@ -654,14 +674,11 @@ function t_collect(
             values,
             batch_size,
             batches_count,
-            into,
             simd,
         )
     end
 
-    pending_threads = get_per_process(storage, "_pending_threads")
-    @assert length(pending_threads) == 1
-    return get_per_thread(storage, into, pending_threads[1])
+    return nothing
 end
 
 function t_collect_up_to_nthreads(
@@ -671,7 +688,6 @@ function t_collect_up_to_nthreads(
     values,
     batch_size::Number,
     batches_count::Int,
-    into::AbstractString,
     simd::SimdFlag,
 )::Nothing
     @assert batches_count <= nthreads()
@@ -682,10 +698,9 @@ function t_collect_up_to_nthreads(
             step,
             storage,
             batch_values_view(values, batch_size, batch_index),
-            into = into,
             simd = simd,
         )
-        collect_thread_accumulator(collect, storage, into)
+        collect_thread_accumulator(collect, storage)
     end
 
     return nothing
@@ -698,7 +713,6 @@ function t_collect_more_than_nthreads(
     values,
     batch_size::Number,
     batches_count::Int,
-    into::AbstractString,
     simd::SimdFlag,
 )::Nothing
     @assert batches_count > nthreads()
@@ -711,12 +725,11 @@ function t_collect_more_than_nthreads(
                 step,
                 storage,
                 batch_values_view(values, batch_size, batch_index),
-                into = into,
                 simd = simd,
             )
             batch_index = atomic_add!(next_batch_index, 1)
         end
-        collect_thread_accumulator(collect, storage, into)
+        collect_thread_accumulator(collect, storage)
     end
 
     return nothing
@@ -805,33 +818,44 @@ end
 
 # Accumulation:
 
-function collect_thread_accumulator(
-    collect::Function,
-    storage::ParallelStorage,
-    into::AbstractString,
-)::Nothing
+function collect_thread_accumulator(collect::Function, storage::ParallelStorage)::Nothing
     thread_id = threadid()
-    while true
-        other_id = 0
-        with_per_process(storage, "_pending_threads") do pending_threads
-            if length(pending_threads) > 0
-                other_id = pop!(pending_threads)
-            else
-                push!(pending_threads, thread_id)
-            end
-        end
-        other_id > 0 || break
 
-        into_id = min(thread_id, other_id)
-        from_id = max(thread_id, other_id)
-        collect(
-            get_per_thread(storage, into, into_id),
-            get_per_thread(storage, into, from_id),
-        )
-        thread_id = into_id
+    # TODO: In theory we could use the main thread for additional collections.
+    threads_collection = get_per_process(storage, "_threads_collection")
+    if thread_id == threads_collection.main_thread_id
+        final_thread_id = take!(threads_collection.final_thread_id_channel)
+        collect(final_thread_id, storage)
+        return nothing
     end
 
-    return nothing
+    did_collect = false
+    while true
+        other_thread_id = 0
+        with_per_process(storage, "_threads_collection") do threads_collection
+            if did_collect
+                threads_collection.remaining_threads_count -= 1
+            end
+
+            other_thread_id = threads_collection.pending_thread_id
+
+            if threads_collection.remaining_threads_count == 2
+                @assert other_thread_id == 0
+                put!(threads_collection.final_thread_id_channel, thread_id)
+            elseif other_thread_id == 0
+                threads_collection.pending_thread_id = thread_id
+            else
+                threads_collection.pending_thread_id = 0
+            end
+        end
+
+        if other_thread_id == 0
+            return nothing
+        end
+
+        collect(other_thread_id, storage)
+        did_collect = true
+    end
 end
 
 # Sending:

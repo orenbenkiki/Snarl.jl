@@ -152,18 +152,18 @@ function reset_test!()::Nothing
     return nothing
 end
 
-@everywhere function tracked_step(resources::ParallelStorage, step_index::Int)::Int
+@everywhere function tracked_step(storage::ParallelStorage, step_index::Int)::Int
     @debug "step" step_index
     # sleep(0.001)
 
-    per_step_context = get_per_step(resources, "context")
+    per_step_context = get_per_step(storage, "context")
     @assert per_step_context.resets > 0
     trackers.per_step_resets[step_index] = per_step_context.resets
 
     track_context(trackers.per_step, step_index, per_step_context)
     track_context(trackers.run_step, step_index, OperationContext())
-    track_context(trackers.per_process, step_index, get_per_process(resources, "context"))
-    track_context(trackers.per_thread, step_index, get_per_thread(resources, "context"))
+    track_context(trackers.per_process, step_index, get_per_process(storage, "context"))
+    track_context(trackers.per_thread, step_index, get_per_thread(storage, "context"))
 
     return step_index
 end
@@ -219,16 +219,16 @@ function check_step_used_different_uniques()::Nothing
     end
 end
 
-function foreach_resources()::ParallelStorage
-    resources = ParallelStorage()
-    add_per_process!(resources, "context", make = OperationContext)
-    add_per_thread!(resources, "context", make = OperationContext)
-    add_per_step!(resources, "context", make = OperationContext, reset = increment_resets!)
-    return resources
+function foreach_storage()::ParallelStorage
+    storage = ParallelStorage()
+    add_per_process!(storage, "context", make = OperationContext)
+    add_per_thread!(storage, "context", make = OperationContext)
+    add_per_step!(storage, "context", make = OperationContext, reset = increment_resets!)
+    return storage
 end
 
 function run_foreach(foreach::Function; flags...)::Nothing
-    foreach(tracked_step, foreach_resources(), 1:steps_count; flags...)
+    foreach(tracked_step, foreach_storage(), 1:steps_count; flags...)
     return nothing
 end
 
@@ -250,7 +250,7 @@ end
 @test_set "s_foreach/simd/invalid" begin
     @test_throws ArgumentError s_foreach(
         tracked_step,
-        foreach_resources(),
+        foreach_storage(),
         1:1,
         simd = :invalid,
     )
@@ -401,7 +401,7 @@ end
 @test_set "dt_foreach/distribution/invalid" begin
     @test_throws ArgumentError dt_foreach(
         tracked_step,
-        foreach_resources(),
+        foreach_storage(),
         1:1,
         distribution = :invalid,
     )
@@ -464,35 +464,37 @@ mutable struct Accumulator
 end
 
 function track_make_accumulator()::Accumulator
+    @debug "make_accumulator" for_thread = threadid()
     accumulator = Accumulator()
     track_context(trackers.run_make_accumulator, accumulator.unique, OperationContext())
     return accumulator
 end
 
-function tracked_collect(accumulator::Accumulator, step_index::Int)::Nothing
+function tracked_collect(storage::ParallelStorage, step_index::Int)::Nothing
     track_context(trackers.run_collect_step, step_index, OperationContext())
+    accumulator = get_per_thread(storage, "accumulator")
     accumulator.count += 1
     accumulator.sum += step_index
-    @debug "collect step" unique = accumulator.unique sum = accumulator.sum step_index
+    @debug "collect step" step_index unique = accumulator.unique sum = accumulator.sum
     return nothing
 end
 
-function tracked_collect(
-    into_accumulator::Accumulator,
-    from_accumulator::Accumulator,
-)::Nothing
+function tracked_collect(from_thread::Int, storage::ParallelStorage)::Nothing
+    @assert from_thread != threadid()
     track_context(trackers.run_collect_merge, next!(MERGE), OperationContext())
+    from_accumulator = get_per_thread(storage, "accumulator", from_thread)
+    into_accumulator = get_per_thread(storage, "accumulator")
     into_accumulator.count += from_accumulator.count
     into_accumulator.sum += from_accumulator.sum
     @debug "collect merge" unique = into_accumulator.unique sum = into_accumulator.sum from =
-        from_accumulator.unique
+        from_accumulator.unique from_thread = from_thread
     return nothing
 end
 
-function collect_resources()::ParallelStorage
-    resources = foreach_resources()
-    add_per_thread!(resources, "result", make = track_make_accumulator)
-    return resources
+function collect_storage()::ParallelStorage
+    storage = foreach_storage()
+    add_per_thread!(storage, "accumulator", make = track_make_accumulator)
+    return storage
 end
 
 function check_used_accumulators(expected_used_accumulators::Int)::Nothing
@@ -520,23 +522,18 @@ function check_used_merges(expected_used_merged::Int)::Nothing
 end
 
 function run_collect(collect::Function; flags...)::Nothing
-    accumulated = collect(
-        tracked_collect,
-        tracked_step,
-        collect_resources(),
-        1:steps_count;
-        into = "result",
-        flags...,
-    )
-    @test accumulated.count == steps_count
-    @test accumulated.sum == round(Int, steps_count * (steps_count + 1) / 2)
+    storage = collect_storage()
+    collect(tracked_collect, tracked_step, storage, 1:steps_count; flags...)
+    accumulator = get_per_thread(storage, "accumulator")
+    @test accumulator.count == steps_count
+    @test accumulator.sum == round(Int, steps_count * (steps_count + 1) / 2)
     return nothing
 end
 
 function check_s_collect(; flags...)::Nothing
     @debug "BEGIN S_COLLECT TEST" flags
     reset_test!()
-    run_collect(s_collect; into = "result", flags...)
+    run_collect(s_collect; flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(1)
     check_step_used_different_uniques()
@@ -553,7 +550,7 @@ end
 function check_t_collect(; expected_used_threads = nthreads(), flags...)::Nothing
     @debug "BEGIN T_COLLECT TEST" expected_used_threads flags
     reset_test!()
-    run_collect(t_collect; into = "result", flags...)
+    run_collect(t_collect; flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(expected_used_threads)
     check_step_used_different_uniques()
