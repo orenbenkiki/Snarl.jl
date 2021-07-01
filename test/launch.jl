@@ -1,15 +1,15 @@
 using Dates
 
+using Base.Threads
 using Distributed
 using Snarl.DistributedLogging
-using Snarl.Launcher
 
 println(stderr, "Launch workers...")
 
-launch_test_workers()
+const test_workers_count = 4
+Distributed.addprocs(test_workers_count)
 
 @everywhere using Snarl.Launched
-
 launched()
 
 @send_everywhere base_time base_time
@@ -22,11 +22,9 @@ launched()
     using Logging
     using Snarl.DistributedLogging
 
-    global_logger(DistributedLogger(
-        log_channel,
-        min_level = log_level,
-        base_time = base_time,
-    ))
+    global_logger(
+        DistributedLogger(log_channel, min_level = log_level, base_time = base_time),
+    )
     @debug "Launched"
 
     function run_query()::Tuple{Int,AbstractArray{Int,1}}

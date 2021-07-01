@@ -1,5 +1,8 @@
 """
 Provide improved distributed logging facilities.
+
+The core concept is to allocate a logger thread in the main process and routes all log messages
+through it, which serializes the log messages into a single manageable stream.
 """
 module DistributedLogging
 
@@ -27,13 +30,14 @@ the channel and write them to the specified stream. If `flush` is set, then the 
 after writing each message.
 
 Returns the channel it listens on. The size of the channel allows up to `size` messages to be sent
-from each process without blocking the senders.
+from each process without blocking the senders. By default this is set to `10` to minimize the
+impact of logging on the senders.
 
 To terminate the task, send `nothing` to the channel.
 
 In each process (including the main process), the logger needs to be set to a `DistributedLogger`. This
 will fully format the message (identifying the process, thread and log level) and send it to the
-channel. By default this is set to `10` to minimize the impact of logging on the senders.
+channel.
 """
 function central_log_channel(
     stream = stderr;
@@ -55,13 +59,12 @@ function central_log_channel(
 end
 
 """
-    DistributedLogger(log_channel; min_level=Info, show_time=true, base_time=false)
+    DistributedLogger(log_channel; min_level=Info, show_time=true, base_time=nothing)
 
 A logger which emits only one line per log, in a uniform format, for using in a distributed setting.
 
 If `show_time` is `true`, then each message is prefixed by the current time. If `base_time` is set
-to a `DateTime`, the time since that starting point is printed instead. If `base_time` is set to
-`true`, the current time is used as a base.
+to a `DateTime`, the time since that starting point is printed instead.
 """
 struct DistributedLogger <: AbstractLogger
     log_channel::RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}}
@@ -75,24 +78,8 @@ DistributedLogger(
     log_channel::RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}};
     min_level::LogLevel = Info,
     show_time::Bool = true,
-    base_time::Union{Bool,DateTime} = false,
-) = DistributedLogger(
-    log_channel,
-    min_level,
-    show_time,
-    start_time(base_time),
-    Dict{Any,Int}(),
-)
-
-function start_time(base_time::Union{Bool,DateTime})::Union{Nothing,DateTime}
-    if base_time isa DateTime  # only appears to be not tested
-        return base_time  # only appears to be not tested
-    elseif base_time
-        return now()  # not tested
-    else
-        return nothing  # not tested
-    end
-end
+    base_time::Union{Nothing,DateTime} = nothing,
+) = DistributedLogger(log_channel, min_level, show_time, base_time, Dict{Any,Int}())
 
 function handle_message(
     logger::DistributedLogger,
@@ -107,16 +94,16 @@ function handle_message(
     kwargs...,
 )::Nothing
     if maxlog !== nothing && maxlog isa Integer
-        remaining = get!(logger.message_limits, id, maxlog)
-        logger.message_limits[id] = remaining - 1
-        remaining > 0 || return
+        remaining = get!(logger.message_limits, id, maxlog) # untested
+        logger.message_limits[id] = remaining - 1 # untested
+        remaining > 0 || return # untested
     end
 
     buf = IOBuffer()
     iob = IOContext(buf)
     if logger.show_time
         if logger.base_time == nothing
-            print(iob, Dates.format(now(), "HH:MM:SS.SSS ; "))  # not tested
+            print(iob, Dates.format(now(), "HH:MM:SS.SSS ; "))  # untested
         else
             milliseconds = (now() - logger.base_time).value
             seconds, milliseconds = divrem(milliseconds, 1000)
@@ -128,21 +115,21 @@ function handle_message(
 
     @printf(iob, "@%02d #%03d ", myid(), threadid())
     if level == Logging.Debug
-        printstyled(iob, "D", color = Base.debug_color())  # not tested
+        printstyled(iob, "D", color = Base.debug_color())  # untested
     elseif level == Logging.Info
         printstyled(iob, "I", color = Base.info_color())
-    elseif level == Logging.Warn  # not tested
-        printstyled(iob, "W", color = Base.warn_color())  # not tested
-    elseif level == Logging.Error  # not tested
-        printstyled(iob, "E", color = Base.error_color())  # not tested
+    elseif level == Logging.Warn  # untested
+        printstyled(iob, "W", color = Base.warn_color())  # untested
+    elseif level == Logging.Error  # untested
+        printstyled(iob, "E", color = Base.error_color())  # untested
     else
-        @assert false  # not tested
+        @assert false  # untested
     end
 
     print(iob, " ; ", message)
 
     for (key, val) in kwargs
-        print(iob, " ; ", key, " = ", val)
+        print(iob, " ; ", key, " = ", val)  # untested
     end
 
     println(iob)

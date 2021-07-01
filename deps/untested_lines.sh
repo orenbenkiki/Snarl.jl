@@ -57,21 +57,21 @@ BEGIN {
     tested = 0
 }
 tolower($4) ~ /only seems untested/ { next }
-$3 == 0 && tolower($4) ~ /not tested/ { next }
+$3 == 0 && tolower($4) ~ /untested/ { next }
 $3 == 0 {
     print $1, $2, " - " $4
     untested += 1
 }
-$3 > 0 && tolower($4) ~ /not tested/ {
+$3 > 0 && tolower($4) ~ /untested/ {
     print $1, $2, " + " $4
     tested += 1
 }
 END {
     if (untested > 0) {
-        printf("ERROR: %s untested lines without a \"Not tested\" annotation\n", untested)
+        printf("ERROR: %s untested lines without an \"untested\" annotation\n", untested)
     }
     if (tested > 0) {
-        printf("ERROR: %s tested lines with a \"Not tested\" annotation\n", tested)
+        printf("ERROR: %s tested lines with an \"untested\" annotation\n", tested)
     }
     if (untested > 0 || tested > 0) {
         exit(1)

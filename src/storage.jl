@@ -17,55 +17,31 @@ export forget_per_process!, forget_per_thread!, forget_per_step!, forget!
 export with_per_process, with_value
 
 """
-Provide a per-process ("global") value to a parallel algorithm.
+    GlobalStorage(; [make::Function=nothing, clear::Function=nothing, value::Any=nothing])
 
-One instance of the value will be created per process. Typically, this value will be constructed
-lazily when the first thread of the process requests the value. All threads will access the same
+Provide storage for a per-process ("global") value for a parallel algorithm.
+
+One instance of the value will be created per process. All process threads will access the same
 instance, so either access would be read-only, thread-safe mutation, or the threads will need to
 coordinate their access in some way.
+
+The `make` function is used to lazily construct the initial value on each process. If an initial
+`value` is provided, there is no need to provide a `make` function. Note that such a value would be
+transmitted through the network to any worker process(es) using the value. For large values, it is
+often preferable to re-construct them on each process using the `make` function.
+
+The `clear` function is used to release associated non-memory resources when the value is no longer
+needed, e.g. closing files. It is invoked with the value to clear.
 """
 mutable struct GlobalStorage
-    """
-    How to create a new value.
-
-    This is only needed if a value is not provided on construction.
-
-    This is invoked without any arguments.
-    """
     make::Union{Type,Function,Nothing}
 
-    """
-    Cleanup when the value is no longer needed.
-
-    This allows releasing associated non-memory resources, e.g. closing files.
-
-    This is invoked with the value to clear.
-    """
     clear::Union{Function,Nothing}
 
-    """
-    The stored pre-process value.
-
-    This may be `nothing` if a value is not provided on construction and the value was
-    not requested yet.
-    """
     value::Any
 
-    """
-    Coordinate between the multiple threads in the current process.
-    """
     semaphore::Semaphore
 
-    """
-        GlobalStorage(; [make::Function, clear::Function, value::Any])
-
-    Construct a new global storage.
-
-    If an initial value is provided, there is no need to provide a `make` function. Note that such a
-    value would be transmitted through the network to any worker process(es) using the value. For
-    large values, it is often preferable to re-construct them on each process using the `make`
-    function.
-    """
     function GlobalStorage(;
         make::Union{Type,Function,Nothing} = nothing,
         clear::Union{Function,Nothing} = nothing,
@@ -74,7 +50,7 @@ mutable struct GlobalStorage
         if value == nothing
             @assert make != nothing "GlobalStorage is missing both a make function and an initial value"
         else
-            @assert make == nothing "GlobalStorage specifies both a make function and an initial value"
+            @assert make == nothing "GlobalStorage specifies both a make function and an initial value"  # untested
         end
         return new(make, clear, value, Semaphore(1))
     end
@@ -112,15 +88,15 @@ direct access to the value in parallel.
 This will create the value if necessary using the registered `make` function.
 """
 function with_value(body::Function, storage::GlobalStorage)::Any
-    Base.acquire(storage.semaphore)
+    Base.acquire(storage.semaphore)  # untested
     try
-        if storage.value == nothing
-            @assert storage.make != nothing "Getting missing GlobalStorage without a make function"  # Not tested
-            storage.value = storage.make()  # Not tested
+        if storage.value == nothing  # untested
+            @assert storage.make != nothing "Getting missing GlobalStorage without a make function"  # untested
+            storage.value = storage.make()  # untested
         end
-        return body(storage.value)
+        return body(storage.value)  # untested
     finally
-        Base.release(storage.semaphore)
+        Base.release(storage.semaphore)  # untested
     end
 end
 
@@ -146,61 +122,42 @@ function clear!(storage::GlobalStorage)::Nothing
     end
 
     if value != nothing && storage.clear != nothing
-        storage.clear(value)  # Not tested
+        storage.clear(value)  # untested
     end
 
     return nothing
 end
 
 """
-Provide a per-thread ("local") value to a parallel algorithm.
+    LocalStorage(make::Function; [clear::Function=nothing, reset::Function=nothing])
+
+Provide storage for a per-thread ("local") value for a parallel algorithm.
 
 One instance of the value will be created per thread of the process. This value instance will be
 constructed lazily when each thread of the process requests the value. As each thread will get its
 own instance, it can freely modify it without the need to coordinate with other threads.
+
+The `make` function is mandatory as we'll need to lazily create a separate new value instance per
+thread.
+
+The `clear` function is used to release associated non-memory resources when the value is no longer
+needed, e.g. closing files. It is invoked with the value to clear.
+
+The `reset` function allows isolating the value between steps. When a step accesses the value, it is
+automatically reset (e.g., arrays may be filled with zeros) so that the step can use it without the
+risk of contamination from the previous step executing on the same thread. It is assumed that
+`reset` is cheaper than garbage-collecting the data used by the previous step and re-allocating and
+initializing a fresh instance for the next step.
 """
 mutable struct LocalStorage
-    """
-    How to create a new value.
-
-    This is invoked without any arguments.
-    """
     make::Union{Type,Function}
 
-    """
-    How to reset the value for each step.
-
-    This allows allocating per-step value only once per thread. When each step accesses the value,
-    it is automatically reset (e.g., arrays may be filled with zeros) so that the step can use it
-    without the risk of contamination from the previous step executing on the same thread.
-
-    This is invoked with the value to reset.
-    """
     reset::Union{Function,Nothing}
 
-    """
-    Cleanup when the value is no longer needed.
-
-    This allows releasing associated non-memory resources, e.g. closing files.
-
-    This is invoked with the value to clear.
-    """
     clear::Union{Function,Nothing}
 
-    """
-    The stored per-thread values.
-
-    Initially all values are `nothing`. When each thread first accesses the value,
-    it is created using the `make` function.
-    """
     values::Array{Any,1}
 
-    """
-        LocalStorage(make::Function; [reset::Function, clear::Function])
-
-    Construct a new local storage. The `make` function is mandatory as we'll need to lazily create a
-    new value instance per thread.
-    """
     LocalStorage(;
         make::Union{Type,Function},
         clear::Union{Function,Nothing} = nothing,
@@ -209,13 +166,15 @@ mutable struct LocalStorage
 end
 
 """
-    get_value(storage::LocalStorage, thread_id=threadid())::Any
+    get_value(storage::LocalStorage, [thread_id::Int=threadid()])::Any
 
 Get the value of a local storage for the specified thread (by default, the current thread).
+Accessing the data of another thread requires it be immutable, allow for thread-safe mutability, or
+be coordinated in some way.
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_value(storage::LocalStorage, thread_id = threadid())::Any
+function get_value(storage::LocalStorage, thread_id::Int = threadid())::Any
     value = @inbounds storage.values[thread_id]
     if value == nothing
         @assert storage.make != nothing "Getting missing LocalStorage without a make function"
@@ -232,41 +191,44 @@ end
     clear!(storage::LocalStorage, [thread_id=0])
 
 Clear all or one of the values of a local storage. If a thread is specified, clear only the value
-for that thread. If a negative thread is specified, clear all the other threads but keep the value
-for this one.
+for that thread. If a zero thread is specified, clear all the values of all the threads. If a
+negative thread is specified, clear all the other threads but keep the value for this one.
 
 At minimum, this will allow the value(s) to be garbage collected. If a `clear` function was
 registered, it can release associated non-memory resources, e.g. closing files.
 
 This is never invoked implicitly. It is only done if explicitly invoked. That is, this
 is not a "destructor".
+
+Clearing the data of other threads requires coordination between the threads. This is mainly
+provided to allow cleanup after all threads are completed.
 """
 function clear!(storage::LocalStorage, thread_id::Int = 0)::Nothing
     @assert -nthreads() <= thread_id && thread_id <= nthreads()
 
     if thread_id == 0
         if storage.clear != nothing
-            for value in storage.values  # Not tested
-                if value != nothing  # Not tested
-                    storage.clear(value)  # Not tested
+            for value in storage.values  # untested
+                if value != nothing  # untested
+                    storage.clear(value)  # untested
                 end
             end
         end
         storage.values[:] .= nothing
 
-    elseif thread_id > 0  # Not tested
-        value = storage.values[thread_id]  # Not tested
-        @inbounds storage.values[thread_id] = nothing  # Not tested
-        if value != nothing && storage.clear != nothing  # Not tested
-            storage.clear(value)  # Not tested
+    elseif thread_id > 0  # untested
+        value = storage.values[thread_id]  # untested
+        @inbounds storage.values[thread_id] = nothing  # untested
+        if value != nothing && storage.clear != nothing  # untested
+            storage.clear(value)  # untested
         end
     else
-        for clear_thread_id = 1:nthreads()  # Not tested
-            clear_thread_id != -thread_id || continue  # Not tested
-            @inbounds value = storage.values[clear_thread_id]  # Not tested
-            @inbounds storage.values[clear_thread_id] = nothing  # Not tested
-            if value != nothing && storage.clear != nothing  # Not tested
-                storage.clear(value)  # Not tested
+        for clear_thread_id = 1:nthreads()  # untested
+            clear_thread_id != -thread_id || continue  # untested
+            @inbounds value = storage.values[clear_thread_id]  # untested
+            @inbounds storage.values[clear_thread_id] = nothing  # untested
+            if value != nothing && storage.clear != nothing  # untested
+                storage.clear(value)  # untested
             end
         end
     end
@@ -275,24 +237,23 @@ function clear!(storage::LocalStorage, thread_id::Int = 0)::Nothing
 end
 
 """
-Provide values to a parallel algorithm.
+Provide storage of values for a parallel algorithm.
 
-This provides a generic storage which allows accessing each value by its scope and name. Values
-are created lazily, when threads actually request them. This allows the value creation to be
-parallel.
+This provides a generic storage which allows accessing each value by its scope and name. Values are
+created lazily, when threads actually request them. This allows the value creation to be parallel.
 """
 mutable struct ParallelStorage
     """
-    A generic container for the per-process (global) values.
+    A generic container for the per-process (global) stored values.
 
-    Per-process values are shared between all the threads of the process, so either access would be
-    read-only, thread-safe mutation, or the threads will need to coordinate their access in some
-    way.
+    Per-process values are shared between all the threads of the process, so access would be either
+    read-only, allow thread-safe mutation, or the threads will need to coordinate their access in
+    some way.
     """
     per_process::Dict{String,GlobalStorage}
 
     """
-    A generic container for the per-thread (local) values.
+    A generic container for the per-thread (local) stored values.
 
     Per-thread values maintain their state between steps executing on the same thread. This makes
     them useful to implement reductions when the result data is large.
@@ -300,7 +261,7 @@ mutable struct ParallelStorage
     per_thread::Dict{String,LocalStorage}
 
     """
-    A generic container for the per-step (local) values.
+    A generic container for the per-step (local) stored values.
 
     Per-step values are reset at the start of each step. This allows allocating them once per thread
     and reusing them in each step without worrying about contamination from the previous steps which
@@ -308,11 +269,6 @@ mutable struct ParallelStorage
     """
     per_step::Dict{String,LocalStorage}
 
-    """
-        ParallelStorage()
-
-    Construct a new empty generic parallel storage.
-    """
     ParallelStorage() = new(Dict{String,Any}(), Dict{String,Any}(), Dict{String,Any}())
 end
 
@@ -376,7 +332,7 @@ Obtain a semaphore for coordinating access to a per-process value value between 
 the process.
 """
 function get_semaphore(storage::ParallelStorage, name::String)::Semaphore
-    return storage.per_process[name].semaphore  # Not tested
+    return storage.per_process[name].semaphore  # untested
 end
 
 """
@@ -385,8 +341,8 @@ end
 Obtain the value of a per-process value from the storage by its name.
 
 The value will be created if necessary (once per process). It will be shared by all the threads of
-the process, so either access would be read-only, thread-safe mutation, or the threads will need to
-coordinate their access in some way, for example using `with_per_process`.
+the process, so access would be either read-only, allow thread-safe mutation, or the threads will
+need to coordinate their access in some way, for example using `with_per_process`.
 
 This will create the value if necessary using the registered `make` function.
 """
@@ -406,7 +362,7 @@ parallel.
 This will create the value if necessary using the registered `make` function.
 """
 function with_per_process(body::Function, storage::ParallelStorage, name::String)::Any
-    return with_value(body, storage.per_process[name])
+    return with_value(body, storage.per_process[name])  # untested
 end
 
 """
@@ -420,7 +376,11 @@ then their modifications to the value will be visible in following steps.
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_per_thread(storage::ParallelStorage, name::String, thread_id = threadid())::Any
+function get_per_thread(
+    storage::ParallelStorage,
+    name::String,
+    thread_id::Int = threadid(),
+)::Any
     return get_value(storage.per_thread[name], thread_id)
 end
 
@@ -434,7 +394,11 @@ be visible in following steps.
 
 This will create the value if necessary using the registered `make` function.
 """
-function get_per_step(storage::ParallelStorage, name::String, thread_id = threadid())::Any
+function get_per_step(
+    storage::ParallelStorage,
+    name::String,
+    thread_id::Int = threadid(),
+)::Any
     return get_value(storage.per_step[name], thread_id)
 end
 
@@ -450,8 +414,8 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 is not a "destructor".
 """
 function clear_per_process!(storage::ParallelStorage, name::String)::Nothing
-    clear!(storage.per_process[name])  # Not tested
-    return nothing  # Not tested
+    clear!(storage.per_process[name])  # untested
+    return nothing  # untested
 end
 
 """
@@ -468,8 +432,8 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 is not a "destructor".
 """
 function clear_per_thread!(storage::ParallelStorage, name::String, thread_id = 0)::Nothing
-    clear!(storage.per_thread[name], thread_id)
-    return nothing
+    clear!(storage.per_thread[name], thread_id)  # untested
+    return nothing  # untested
 end
 
 """
@@ -486,8 +450,8 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 is not a "destructor".
 """
 function clear_per_step!(storage::ParallelStorage, name::String, thread_id = 0)::Nothing
-    clear!(storage.per_step[name], thread_id)  # Not tested
-    return nothing  # Not tested
+    clear!(storage.per_step[name], thread_id)  # untested
+    return nothing  # untested
 end
 
 """
@@ -495,8 +459,8 @@ end
 
 Clear all the values.
 
-This releases all the values to the garbage collector, and also releases any associated non-memory
-resources, e.g. closing files.
+This releases all the values to the garbage collector, and also invokes the registered `clear`
+functions to release any associated non-memory resources, e.g. closing files.
 
 This is never invoked implicitly. It is only done if explicitly invoked. That is, this
 is not a "destructor".
@@ -523,9 +487,9 @@ end
 Clear and completely forget the value of a per-process value from the storage by its name.
 """
 function forget_per_process!(storage::ParallelStorage, name::String)::Nothing
-    clear!(storage.per_process[name])
-    delete!(storage.per_process, name)
-    return nothing
+    clear!(storage.per_process[name])  # untested
+    delete!(storage.per_process, name)  # untested
+    return nothing  # untested
 end
 
 """
@@ -534,9 +498,9 @@ end
 Clear all of the values of a per-thread storage and completely forget it.
 """
 function forget_per_thread!(storage::ParallelStorage, name::String)::Nothing
-    clear!(storage.per_thread[name])
-    delete!(storage.per_thread, name)
-    return nothing
+    clear!(storage.per_thread[name])  # untested
+    delete!(storage.per_thread, name)  # untested
+    return nothing  # untested
 end
 
 """
@@ -545,9 +509,9 @@ end
 Clear all of the values of a per-step storage and completely forget it.
 """
 function forget_per_step!(storage::ParallelStorage, name::String)::Nothing
-    clear!(storage.per_step[name])  # Not tested
-    delete!(storage.per_step, name)  # Not tested
-    return nothing  # Not tested
+    clear!(storage.per_step[name])  # untested
+    delete!(storage.per_step, name)  # untested
+    return nothing  # untested
 end
 
 """

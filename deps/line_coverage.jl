@@ -26,4 +26,6 @@ coverage = merge_coverage_counts(
 # Get total coverage for all Julia files
 covered_lines, total_lines = get_summary(coverage)
 percent = round(Int, 100 * covered_lines / total_lines)
-println("Line coverage: $(percent)% ($(covered_lines) covered out of $(total_lines) total lines)")
+println(
+    "Line coverage: $(percent)% ($(covered_lines) covered out of $(total_lines) total lines)",
+)

@@ -12,25 +12,25 @@ using ..Storage
 export SimdFlag, PreferFlag
 export next_worker!
 export default_batch_factor,
-    default_minimal_batch_size, default_maximize_distribution, default_simd
+    default_minimal_batch, default_maximize_distribution, default_simd
 export s_foreach, t_foreach, d_foreach, dt_foreach
-export s_collect, t_collect, d_collect, dt_collect
-export clear_accumulators!, forget_accumulators!
 
 # Data types:
 
 """
 The `@simd` directive to use for an inner loop.
+
+Valid values are `false`, `true` or `:ivdep`.
 """
 const SimdFlag = Union{Bool,Symbol,Val{true},Val{false},Val{:ivdep}}
 
 """
 The policy to use to distribute multi-threaded work across processes.
 
-Specifying `maximize_processes` uses all the processes (servers), by using fewer threads in each
+Specifying `:maximize_processes` uses all the processes (servers), by using fewer threads in each
 one.
 
-Specifying `minimize_processes` uses the fewest processes (servers), by using all the threads in
+Specifying `:minimize_processes` uses the fewest processes (servers), by using all the threads in
 each one.
 """
 const DistributionPolicy = Union{Symbol,Val{:maximize_processes},Val{:minimize_processes}}
@@ -47,18 +47,18 @@ end
 """
 The default `@simd` directive to apply to the inner loops.
 
-The default is `:ivdep` because the code here assumes all steps are entirely independent. Any
-coordination is expected to be done using the appropriate `ParallelStorage`.
+The default `:ivdep` is chosen because the code here assumes all steps are entirely independent. Any
+coordination is expected to be explicit (e.g. by using `ParallelStorage`).
 """
 const default_simd = :ivdep
 
 """
-The default minimal number of iterations executed serially in a batch.
+The default minimal number of steps executed serially in a batch.
 
 The default is `1`, not because it is the most useful, but because no other specific value is
 generally useful either.
 """
-const default_minimal_batch_size = 1
+const default_minimal_batch = 1
 
 """
 The default number of batches to run in each thread.
@@ -92,17 +92,21 @@ next_worker_id = Atomic{Int}(myid())
 Return the next worker process to use.
 
 This tries to spread the work evenly between all workers. Mainly intended to be used in `@spawnat
-next_worker!() ...` for launching a single job on some other process (never on the current process).
+next_worker!() ...` for launching a single job on some process; if at all possible, this will be a
+different process than this one.
 """
 function next_worker!()::Int
     worker_id = myid()
-    while worker_id == myid()
-        worker_id = 1 + mod(atomic_add!(next_worker_id, 1), nprocs())
+    if nprocs() > 1
+        while worker_id == myid()
+            worker_id = 1 + mod(atomic_add!(next_worker_id, 1), nprocs())
+        end
     end
     return worker_id
 end
 
 function next_workers!(workers_count::Int)::Array{Int,1}
+    @assert nprocs() > 1
     @assert 1 <= workers_count && workers_count <= nworkers()
     if workers_count == nworkers()
         worker_ids = [1:nprocs();]
@@ -135,7 +139,7 @@ end
 Perform `step` for each `value` in `values`, serially, using the current thread in the current
 process.
 
-This is implemented as a simple loop using the specified `simd`, which repeatedly invoked
+This is implemented as a simple loop using the specified `simd`, which repeatedly invokes
 `step(storage, value)`. The return value of `step` is discarded.
 
 Having `s_foreach` makes it easier to convert a parallel loop to a serial one, for example for
@@ -173,12 +177,14 @@ end
 
 """
     t_foreach(step::Function, storage::ParallelStorage, values::collection;
-              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
+              batch_factor::Int=default_batch_factor,
+              minimal_batch::Int=default_minimal_batch,
+              simd::SimdFlag=default_simd)
 
 Perform a step for each value in the collection, in parallel, using multiple threads in the current
 process.
 
-Scheduling is done in equal-size batches containing at least `minimal_batch` iterations in each,
+Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each,
 where on average each thread will execute at most `batch_factor` such batches.
 
 Each batch is executed as an inner loop using `s_foreach` with the specified `simd`.
@@ -188,7 +194,7 @@ function t_foreach(
     storage::ParallelStorage,
     values;
     batch_factor::Int = default_batch_factor,
-    minimal_batch::Int = 1,
+    minimal_batch::Int = default_minimal_batch,
     simd::SimdFlag = default_simd,
 )::Nothing
     batches_count, batch_size = batches_configuration(
@@ -219,7 +225,7 @@ end
 Perform a step for each value in the collection, in parallel, using a single thread in each of the
 processes (including the current one).
 
-Scheduling is done in equal-size batches containing at least `minimal_batch` iterations in each,
+Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each,
 where on average each process (thread) will execute at most `batch_factor` such batches.
 
 Each batch is executed as an inner loop using `s_foreach` with the specified `simd`.
@@ -229,9 +235,14 @@ function d_foreach(
     storage::ParallelStorage,
     values;
     batch_factor::Int = default_batch_factor,
-    minimal_batch::Int = 1,
+    minimal_batch::Int = default_minimal_batch,
     simd::SimdFlag = default_simd,
 )::Nothing
+    if nprocs() == 1
+        s_foreach(step, storage, values, simd = simd)  # untested
+        return nothing  # untested
+    end
+
     batches_count, batch_size = batches_configuration(
         step,
         storage,
@@ -260,7 +271,7 @@ end
 Perform a step for each value in the collection, in parallel, using multiple threads in multiple
 processes (including the current one).
 
-Scheduling is done in equal-size batches containing at least `minimal_batch` iterations in each,
+Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each,
 where on average each thread will execute at most `batch_factor` such batches.
 
 If `distribution` is `maximize_processes`, use all the processes (servers), by using fewer threads
@@ -274,10 +285,15 @@ function dt_foreach(
     storage::ParallelStorage,
     values;
     batch_factor::Int = default_batch_factor,
-    minimal_batch::Int = 1,
+    minimal_batch::Int = default_minimal_batch,
     distribution::DistributionPolicy = default_distribution,
     simd::SimdFlag = default_simd,
 )::Nothing
+    if nprocs() == 1
+        s_foreach(step, storage, values, simd = simd)  # untested
+        return nothing  # untested
+    end
+
     verify_distribution(distribution)
 
     batches_count, batch_size = batches_configuration(
@@ -563,193 +579,6 @@ function dt_foreach_minimize_processes(
     end
 end
 
-# Collect:
-
-"""
-    s_collect(collect::Function, step::Function, storage::ParallelStorage,
-              values::collection; simd::SimdFlag=default_simd)
-
-Perform `step` for each `value` in `values`, serially, using the current thread in the current
-process; `collect` the returned results into per-current-thread accumulator(s) in the `storage`. The
-final results should be fetched from the `storage`.
-
-This is implemented as a simple loop using the specified `simd`, which repeatedly invokes
-`collect(storage, step(storage, value))`.
-
-!!! note
-
-    Collection is different from reduction!
-
-    Collection always assumes the order of the collections does not matter, while reduction may
-    optionally require that reductions will always be of adjacent values. This makes it easier to
-    more efficiently parallelize collections.
-
-    The `collect` function takes a new value and injects it into mutable per-current-thread
-    `storage` accumulator(s), while a `reduce` function takes two values and returns a new separate
-    value. For example, to perform a sum of integers using `collect`, define the accumulator to be
-    an array with a single entry containing the sum.
-
-Having `s_collect` makes it easier to convert a parallel collection to a serial one, for example for
-comparing parallel and serial performance.
-"""
-function s_collect(
-    collect::Function,
-    step::Function,
-    storage::ParallelStorage,
-    values;
-    simd::SimdFlag = default_simd,
-)::Nothing
-    s_foreach(storage, values, simd = simd) do storage, value
-        collect(storage, step(storage, value))
-    end
-end
-
-mutable struct ThreadsCollection
-    main_thread_id::Int
-    pending_thread_id::Int
-    remaining_threads_count::Int
-    final_thread_id_channel::Channel{Int}
-end
-
-"""
-    t_collect(collect::Function, step::Function, storage::ParallelStorage, values::collection;
-              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
-
-Perform `step` for each `value` in `values`, in parallel, using multiple threads in the current
-process; `collect` the returned results into per-thread storage. When done, collect the separate
-per-thread accumulator(s) into the per-current-thread accumulator(s) `storage`, again using multiple
-threads.
-
-To manage this, a per-process `_threads_collection` value is used through the collection.
-
-This builds on `s_collect` to accumulate results in each thread. The results are expected to be
-stored in per-thread storage values with names starting with "accumulate_". To collect the final
-results, this will invoke `collect(from_thread, storage)` which is expected to collect the
-per-thread accumulator(s) of `from_thread` into the per-current-thread accumulator(s) of the
-`storage`. The order of parameters in this case is intentionally reversed to allow for deterministic
-dispatch distinguishing between collecting an integer step result, and collecting accumulated
-results from a different thread.
-
-The final `collect` will always be in the current thread so that the per-current-thread
-accumulator(s) in the `storage` will contain the final result when `t_collect` returns.
-"""
-function t_collect(
-    collect::Function,
-    step::Function,
-    storage::ParallelStorage,
-    values;
-    batch_factor::Int = default_batch_factor,
-    minimal_batch::Int = 1,
-    simd::SimdFlag = default_simd,
-)::Nothing
-    batches_count, batch_size = batches_configuration(
-        step,
-        storage,
-        values,
-        batch_factor,
-        minimal_batch,
-        simd,
-        nthreads(),
-    )
-
-    if batches_count <= 1
-        return s_collect(collect, step, storage, values, simd = simd)
-    end
-
-    add_per_process!(
-        storage,
-        "_threads_collection",
-        value = ThreadsCollection(
-            threadid(),
-            0,
-            min(batches_count, nthreads()),
-            Channel{Int}(1),
-        ),
-    )
-
-    try
-        if batches_count <= nthreads()
-            t_collect_up_to_nthreads(
-                collect,
-                step,
-                storage,
-                values,
-                batch_size,
-                batches_count,
-                simd,
-            )
-        else
-            t_collect_more_than_nthreads(
-                collect,
-                step,
-                storage,
-                values,
-                batch_size,
-                batches_count,
-                simd,
-            )
-        end
-    finally
-        forget_per_process!(storage, "_threads_collection")
-    end
-
-    return nothing
-end
-
-function t_collect_up_to_nthreads(
-    collect::Function,
-    step::Function,
-    storage::ParallelStorage,
-    values,
-    batch_size::Number,
-    batches_count::Int,
-    simd::SimdFlag,
-)::Nothing
-    @assert batches_count <= nthreads()
-
-    @sync @threads for batch_index = 1:batches_count
-        s_collect(
-            collect,
-            step,
-            storage,
-            batch_values_view(values, batch_size, batch_index),
-            simd = simd,
-        )
-        collect_thread_accumulator(collect, storage)
-    end
-
-    return nothing
-end
-
-function t_collect_more_than_nthreads(
-    collect::Function,
-    step::Function,
-    storage::ParallelStorage,
-    values,
-    batch_size::Number,
-    batches_count::Int,
-    simd::SimdFlag,
-)::Nothing
-    @assert batches_count > nthreads()
-
-    next_batch_index = Atomic{Int}(nthreads() + 1)
-    @sync @threads for batch_index = 1:nthreads()
-        while batch_index <= batches_count
-            s_collect(
-                collect,
-                step,
-                storage,
-                batch_values_view(values, batch_size, batch_index),
-                simd = simd,
-            )
-            batch_index = atomic_add!(next_batch_index, 1)
-        end
-        collect_thread_accumulator(collect, storage)
-    end
-
-    return nothing
-end
-
 # Configuration:
 
 function batches_configuration(
@@ -831,48 +660,6 @@ function batch_values_views(
     return views
 end
 
-# Accumulation:
-
-function collect_thread_accumulator(collect::Function, storage::ParallelStorage)::Nothing
-    thread_id = threadid()
-
-    # TODO: In theory we could use the main thread for additional collections.
-    threads_collection = get_per_process(storage, "_threads_collection")
-    if thread_id == threads_collection.main_thread_id
-        final_thread_id = take!(threads_collection.final_thread_id_channel)
-        collect(final_thread_id, storage)
-        return nothing
-    end
-
-    did_collect = false
-    while true
-        other_thread_id = 0
-        with_per_process(storage, "_threads_collection") do threads_collection
-            if did_collect
-                threads_collection.remaining_threads_count -= 1
-            end
-
-            other_thread_id = threads_collection.pending_thread_id
-
-            if threads_collection.remaining_threads_count == 2
-                @assert other_thread_id == 0
-                put!(threads_collection.final_thread_id_channel, thread_id)
-            elseif other_thread_id == 0
-                threads_collection.pending_thread_id = thread_id
-            else
-                threads_collection.pending_thread_id = 0
-            end
-        end
-
-        if other_thread_id == 0
-            return nothing
-        end
-
-        collect(other_thread_id, storage)
-        did_collect = true
-    end
-end
-
 # Sending:
 
 function send_batches(
@@ -944,52 +731,6 @@ function t_run_batches(
 )::Nothing
     @sync @threads for index = 1:length(batch_values)
         s_foreach(step, storage, batch_values[index], simd = simd)
-    end
-
-    return nothing
-end
-
-# Storage:
-
-"""
-    clear_accumulators!(storage::ParallelStorage, thread_id::Int=0)
-
-Clear all or one of the accumulators of a storage. If a thread is specified, clear only the
-accumulators for that thread. If a negative thread is specified, clear all the other threads but
-keep the accumulators for this one.
-
-A value is considered to be an accumulator if it is per-thread and its name begins with
-"accumulate_".
-"""
-function clear_accumulators!(storage::ParallelStorage, thread_id::Int = 0)::Nothing
-    for name in keys(storage.per_thread)
-        if startswith(name, "accumulate_")
-            clear_per_thread!(storage, name, thread_id)
-        end
-    end
-    return nothing
-end
-
-"""
-    forget_accumulators!(storage::ParallelStorage)
-
-Clear and forget all the accumulator values of a storage.
-
-A value is considered to be an accumulator if it is per-thread and its name begins with
-"accumulate_".
-"""
-function forget_accumulators!(storage::ParallelStorage)::Nothing
-    names = Array{AbstractString,1}(undef, 0)
-    sizehint!(names, length(storage.per_thread))
-
-    for name in keys(storage.per_thread)
-        if startswith(name, "accumulate_")
-            push!(names, name)
-        end
-    end
-
-    for name in names
-        forget_per_thread!(storage, name)
     end
 
     return nothing

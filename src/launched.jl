@@ -1,5 +1,5 @@
 """
-Configure once worker processes have been launched.
+Configure `Snarl` once the worker processes have been launched.
 """
 module Launched
 
