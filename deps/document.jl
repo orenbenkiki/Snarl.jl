@@ -9,5 +9,5 @@ makedocs(
     modules = [Snarl],
     authors = "Oren Ben-Kiki",
     format = Documenter.HTML(prettyurls = get(ENV, "CI", nothing) == "true"),
-    pages = ["index.md", "setup.md", "control.md", "storage.md"],
+    pages = ["index.md", "setup.md", "storage.md", "control.md"],
 )

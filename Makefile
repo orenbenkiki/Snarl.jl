@@ -1,9 +1,9 @@
 .PHONY: pre_commit
-pre_commit: _unindexed_files ci_build line_coverage
+pre_commit: _unindexed_files ci_build
 	git status
 
 .PHONY: ci_build
-ci_build: format unindexed_files check docs
+ci_build: format unindexed_files check coverage docs
 
 .PHONY: _unindexed_files
 _unindexed_files:

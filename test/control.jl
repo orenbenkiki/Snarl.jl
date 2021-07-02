@@ -39,9 +39,9 @@ end
 remote_do(serve_counters, 1)
 
 @everywhere function next!(counter::Int)::Int
-    response_channel::RemoteChannel{Channel{Int}} = RemoteChannel(() -> Channel{Int}(1))
+    response_channel = RemoteChannel(() -> Channel{Int}(1))
     put!(counters_channel, (counter, response_channel))
-    sleep(0.001)  # TODO: Why is this necessary?
+    yield()  # TODO: Why is this needed?
     return take!(response_channel)
 end
 
