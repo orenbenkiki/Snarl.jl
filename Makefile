@@ -48,7 +48,7 @@ coverage: untested_lines line_coverage
 .PHONY: docs
 docs: docs/build/index.html
 
-docs/build/index.html: src/*.jl docs/src/*.md docs/src/assets/*
+docs/build/index.html: src/*.jl docs/src/*.md
 	deps/document.sh
 
 .PHONY: clean
