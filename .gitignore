@@ -1,7 +1,7 @@
-deps/build
 deps/.coverage
 deps/.formatted
 deps/.untested
+docs/build
 *.jl.cov
 *.jl.*.cov
 junk*

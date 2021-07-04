@@ -44,7 +44,7 @@ said, if this is all you want to do, then `Snarl` might be an overkill. You migh
 order to have a smooth migration path towards running the application on a cluster of servers.
 
 Either way, this will cause `Snarl` to figure out what is available. Specifically, it will
-initialize:
+initialize everywhere:
 
 ```@docs
 Snarl.Launched.total_threads_count

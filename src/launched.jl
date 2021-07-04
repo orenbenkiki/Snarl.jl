@@ -23,13 +23,13 @@ end
 """
     @send_everywhere name value
 
-Define a global variable that will exist on all processes. The initial value will be computed once
-on the current (main) process and will be sent to all the other processes. This allows sending
-configuration values etc. to all processes.
+Define a global variable that will exist everywhere. The initial value will be computed once on the
+current (main) process thread and will be sent everywhere else. This allows sending configuration
+values etc. everywhere.
 
 In tests, when all processes run on the same machine, this also allows sharing values such as
-`Atomic` and `SharedArray` between all processes. This will not work in production, where worker
-processes run on different machines.
+`Atomic` and `SharedArray` everywhere. This will not work in production, where worker processes run
+on different machines.
 """
 macro send_everywhere(name, value)
     quote

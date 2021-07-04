@@ -4,8 +4,9 @@ Running computation steps in parallel but raises issues of thread safety when ac
 especially since Julia lacks any language-level mechanisms for ensuring this (as opposed to Rust). A
 second important concern is efficiency; if each step allocates and drops large intermediate data
 structures (typically, arrays), the garbage collector will be needlessly stressed. It would be nice
-to be able to reuse this intermediate data across steps, but we need to do this safely as different
-steps run on different threads.
+to be able to reuse this intermediate data across steps, but we need to do this safely as we would
+want to isolate the data used by each step from the other steps, even when running in the same
+thread.
 
 `Snarl` therefore provides the following:
 

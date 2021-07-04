@@ -1,5 +1,4 @@
 #!/bin/sh
-rm -rf deps/build
-ln -sf $PWD/src $PWD/deps/src
-julia --color=yes deps/document.jl
-rm deps/src
+cd docs
+rm -rf build
+julia --color=yes make.jl

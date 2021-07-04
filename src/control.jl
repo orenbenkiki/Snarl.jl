@@ -48,7 +48,7 @@ end
 The default `@simd` directive to apply to the inner loops.
 
 The default `:ivdep` is chosen because the code here assumes all steps are entirely independent. Any
-coordination is expected to be explicit (e.g. by using `ParallelStorage`).
+coordination is expected to be explicit (e.g. by using "global" storage in the `ParallelStorage`).
 """
 const default_simd = :ivdep
 

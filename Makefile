@@ -46,9 +46,9 @@ deps/.untested: tracefile.info
 coverage: untested_lines line_coverage
 
 .PHONY: docs
-docs: deps/build/index.html
+docs: docs/build/index.html
 
-deps/build/index.html: src/*.jl src/*.md
+docs/build/index.html: src/*.jl docs/src/*.md docs/src/assets/*
 	deps/document.sh
 
 .PHONY: clean
