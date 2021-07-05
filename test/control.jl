@@ -30,7 +30,9 @@ function serve_counters()::Nothing
         response_channel = request[2]
 
         used_counters[counter] += 1
+
         put!(response_channel, used_counters[counter])
+        close(response_channel)
     end
 
     error("Never happens")  # untested
@@ -41,7 +43,13 @@ remote_do(serve_counters, 1)
 @everywhere function next!(counter::Int)::Int
     response_channel = RemoteChannel(() -> Channel{Int}(1))
     put!(counters_channel, (counter, response_channel))
-    yield()  # TODO: Why is this needed?
+    sleep(0) # Doesn't solve the problem.
+    atomic_fence() # Doesn't solve the problem.
+    yield()  # Doesn't solve the problem.
+    # Problems manifested here:
+    # - Deadlock
+    # - GC error
+    # - Taking from a closed channel.
     return take!(response_channel)
 end
 
