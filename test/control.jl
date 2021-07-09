@@ -20,10 +20,12 @@ function make_counters_channel()::Channel{Tuple{Int,RemoteChannel{Channel{Int}}}
     return Channel{Tuple{Int,RemoteChannel{Channel{Int}}}}(nprocs() * nthreads())
 end
 
-@send_everywhere counters_channel RemoteChannel(make_counters_channel)
+remote_counters_channel = RemoteChannel(make_counters_channel)
+@send_everywhere counters_channel remote_counters_channel
 
 function serve_counters()::Nothing
     while true
+        yield()
         request = take!(counters_channel)
 
         counter = request[1]
@@ -32,7 +34,6 @@ function serve_counters()::Nothing
         used_counters[counter] += 1
 
         put!(response_channel, used_counters[counter])
-        close(response_channel)
     end
 
     error("Never happens")  # untested
@@ -40,16 +41,9 @@ end
 
 remote_do(serve_counters, 1)
 
-@everywhere function next!(counter::Int)::Int
-    response_channel = RemoteChannel(() -> Channel{Int}(1))
+@everywhere function next!(response_channel::RemoteChannel{Channel{Int}}, counter::Int)::Int
     put!(counters_channel, (counter, response_channel))
-    sleep(0) # Doesn't solve the problem.
-    atomic_fence() # Doesn't solve the problem.
-    yield()  # Doesn't solve the problem.
-    # Problems manifested here:
-    # - Deadlock
-    # - GC error
-    # - Taking from a closed channel.
+    yield()
     return take!(response_channel)
 end
 
@@ -63,7 +57,8 @@ end
     thread::Int
     unique::Int
     resets::Int
-    OperationContext() = new(myid(), threadid(), next!(UNIQUE), 0)
+    OperationContext(response_channel::RemoteChannel{Channel{Int}}) =
+        new(myid(), threadid(), next!(response_channel, UNIQUE), 0)
 end
 
 @everywhere function increment_resets!(context::OperationContext)::Nothing
@@ -156,7 +151,8 @@ end
 @everywhere function tracked_step(storage::ParallelStorage, step_index::Int)::Int
     @debug "step" step_index
 
-    track_context(trackers.run_step, step_index, OperationContext())
+    response_channel = get_per_thread(storage, "response_channel")
+    track_context(trackers.run_step, step_index, OperationContext(response_channel))
 
     per_step_context = get_per_step(storage, "context")
     @assert per_step_context.resets > 0
@@ -221,11 +217,30 @@ function check_step_used_different_uniques()::Nothing
     end
 end
 
+@everywhere function global_context_maker(storage::ParallelStorage)::Function
+    return () -> OperationContext(get_per_process(storage, "response_channel"))
+end
+
+@everywhere function thread_context_maker(storage::ParallelStorage)::Function
+    return () -> OperationContext(get_per_thread(storage, "response_channel"))
+end
+
+@everywhere function make_response_channel()::RemoteChannel{Channel{Int}}
+    return RemoteChannel(() -> Channel{Int}(1))
+end
+
 function foreach_storage()::ParallelStorage
     storage = ParallelStorage()
-    add_per_process!(storage, "context", make = OperationContext)
-    add_per_thread!(storage, "context", make = OperationContext)
-    add_per_step!(storage, "context", make = OperationContext, reset = increment_resets!)
+    add_per_process!(storage, "response_channel", make = make_response_channel)
+    add_per_thread!(storage, "response_channel", make = make_response_channel)
+    add_per_process!(storage, "context", make = global_context_maker(storage))
+    add_per_thread!(storage, "context", make = thread_context_maker(storage))
+    add_per_step!(
+        storage,
+        "context",
+        make = thread_context_maker(storage),
+        reset = increment_resets!,
+    )
     return storage
 end
 
