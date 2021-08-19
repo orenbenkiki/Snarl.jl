@@ -36,6 +36,7 @@ end
 
 function serve_counters()::Nothing
     while true
+        yield()
         request = take!(counters_channel)
 
         counter = request[1]
@@ -71,7 +72,8 @@ end
     thread::Int
     unique::Int
     resets::Int
-    OperationContext() = new(myid(), threadid(), next!(UNIQUE), 0)
+    OperationContext(response_channel::RemoteChannel{Channel{Int}}) =
+        new(myid(), threadid(), next!(UNIQUE), 0)
 end
 
 @everywhere function increment_resets!(context::OperationContext)::Nothing
@@ -162,7 +164,8 @@ end
 @everywhere function tracked_step(storage::ParallelStorage, step_index::Int)::Int
     @debug "step" step_index
 
-    track_context(trackers.run_step, step_index, OperationContext())
+    response_channel = get_per_thread(storage, "response_channel")
+    track_context(trackers.run_step, step_index, OperationContext(response_channel))
 
     per_step_context = get_per_step(storage, "context")
     @assert per_step_context.resets > 0
@@ -227,11 +230,30 @@ function check_step_used_different_uniques()::Nothing
     end
 end
 
+@everywhere function global_context_maker(storage::ParallelStorage)::Function
+    return () -> OperationContext(get_per_process(storage, "response_channel"))
+end
+
+@everywhere function thread_context_maker(storage::ParallelStorage)::Function
+    return () -> OperationContext(get_per_thread(storage, "response_channel"))
+end
+
+@everywhere function make_response_channel()::RemoteChannel{Channel{Int}}
+    return RemoteChannel(() -> Channel{Int}(1))
+end
+
 function foreach_storage()::ParallelStorage
     storage = ParallelStorage()
-    add_per_process!(storage, "context", make = OperationContext)
-    add_per_thread!(storage, "context", make = OperationContext)
-    add_per_step!(storage, "context", make = OperationContext, reset = increment_resets!)
+    add_per_process!(storage, "response_channel", make = make_response_channel)
+    add_per_thread!(storage, "response_channel", make = make_response_channel)
+    add_per_process!(storage, "context", make = global_context_maker(storage))
+    add_per_thread!(storage, "context", make = thread_context_maker(storage))
+    add_per_step!(
+        storage,
+        "context",
+        make = thread_context_maker(storage),
+        reset = increment_resets!,
+    )
     return storage
 end
 
