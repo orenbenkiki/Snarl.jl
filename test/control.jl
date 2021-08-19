@@ -1,7 +1,11 @@
+using Distributed
+
+@everywhere using Base.Threads
 @everywhere using SharedArrays
 @everywhere using Snarl.Control
 @everywhere using Snarl.Launched
 @everywhere using Snarl.Storage
+@everywhere using Snarl.Channels
 
 @everywhere import Snarl.Storage: clear!
 
@@ -16,23 +20,30 @@ const COUNTERS = 3
 
 used_counters = zeros(Int, COUNTERS)
 
-function make_counters_channel()::Channel{Tuple{Int,RemoteChannel{Channel{Int}}}}
-    return Channel{Tuple{Int,RemoteChannel{Channel{Int}}}}(nprocs() * nthreads())
-end
+local_counters_channel =
+    Channel{Tuple{Int,Union{Channel{Int},RemoteChannel{Channel{Int}}}}}(
+        nprocs() * nthreads(),
+    )
+remote_counters_channel = RemoteChannel(() -> local_counters_channel)
 
-@send_everywhere counters_channel RemoteChannel(make_counters_channel)
+@everywhere begin
+    if myid() == 1
+        counters_channel = $local_counters_channel
+    else
+        counters_channel = ThreadSafeRemoteChannel($remote_counters_channel)
+    end
+end
 
 function serve_counters()::Nothing
     while true
         request = take!(counters_channel)
 
         counter = request[1]
-        response_channel = request[2]
+        response = request[2]
 
         used_counters[counter] += 1
 
-        put!(response_channel, used_counters[counter])
-        close(response_channel)
+        put!(response, used_counters[counter])
     end
 
     error("Never happens")  # untested
@@ -41,16 +52,13 @@ end
 remote_do(serve_counters, 1)
 
 @everywhere function next!(counter::Int)::Int
-    response_channel = RemoteChannel(() -> Channel{Int}(1))
-    put!(counters_channel, (counter, response_channel))
-    sleep(0) # Doesn't solve the problem.
-    atomic_fence() # Doesn't solve the problem.
-    yield()  # Doesn't solve the problem.
-    # Problems manifested here:
-    # - Deadlock
-    # - GC error
-    # - Taking from a closed channel.
-    return take!(response_channel)
+    if myid() == 1
+        response = Channel{Int}(1)
+    else
+        response = RemoteChannel(() -> Channel{Int}(1))
+    end
+    put!(counters_channel, (counter, response))
+    return take!(response)
 end
 
 function reset_counters!()::Nothing
@@ -118,16 +126,6 @@ end
     per_step_resets::AbstractArray{Int,1}
 end
 
-function new_trackers()::Trackers
-    return Trackers(
-        new_context_trackers(),
-        new_context_trackers(),
-        new_context_trackers(),
-        new_context_trackers(),
-        new_tracking_array(),
-    )
-end
-
 function clear!(trackers::Trackers)::Nothing
     clear!(trackers.run_step)
 
@@ -140,7 +138,15 @@ function clear!(trackers::Trackers)::Nothing
     return nothing
 end
 
-@send_everywhere trackers new_trackers()
+new_trackers = Trackers(
+    new_context_trackers(),
+    new_context_trackers(),
+    new_context_trackers(),
+    new_context_trackers(),
+    new_tracking_array(),
+)
+
+@everywhere trackers = $new_trackers
 
 function reset_trackers!()::Nothing
     clear!(trackers)

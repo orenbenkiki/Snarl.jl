@@ -1,8 +1,8 @@
 """
 Provide improved distributed logging facilities.
 
-The core concept is to allocate a logger thread in the main process and routes all log messages
-through it, which serializes the log messages into a single manageable stream.
+The core concept is to have a logger task in the main process and routes all log messages through
+it, which serializes the log messages into a single manageable stream.
 """
 module DistributedLogging
 
@@ -12,6 +12,9 @@ using Distributed
 using Logging
 using Printf
 
+using ..Channels
+using ..Launched
+
 import Base.CoreLogging:
     AbstractLogger,
     SimpleLogger,
@@ -20,66 +23,128 @@ import Base.CoreLogging:
     min_enabled_level,
     catch_exceptions
 
-export central_log_channel, DistributedLogger
+export setup_logging, drain_logging, teardown_logging, DistributedLogger
+
+local_log_channel = nothing
 
 """
-    central_log_channel(stream=stderr; flush=false, size=4)::RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}}
+    setup_logging(stream=stderr; flush=false, size=4)::RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}}
 
-This is expected to run in a thread on the main process. It will listen for log messages arriving on
-the channel and write them to the specified stream. If `flush` is set, then the stream is flushed
-after writing each message.
+This can only be run in the main process, and should be done immediately after launching all the
+worker processes. It will spawn a task that listens for log messages arriving on some channel, and
+write them to the specified stream.
 
-Returns the channel it listens on. The size of the channel allows up to `size` messages to be sent
-from each process without blocking the senders. By default this is set to `10` to minimize the
-impact of logging on the senders.
+If `show_time` is `true`, then each message is prefixed by the current time. If `base_time` is set
+to a `DateTime`, the time since that starting point is printed instead. If `flush` is set, then the
+stream is flushed after writing each message.
 
-To terminate the task, send `nothing` to the channel.
+The channel allows up to `size` messages to be sent from each thread in each process without
+blocking the senders. By default this is set to `4` to minimize the impact of logging on the
+senders.
 
-In each process (including the main process), the logger needs to be set to a `DistributedLogger`. This
-will fully format the message (identifying the process, thread and log level) and send it to the
-channel.
+To terminate the task, run `teardown_logging`.
 """
-function central_log_channel(
+function setup_logging(
     stream = stderr;
+    min_level::LogLevel = Logging.Warn,
+    show_time::Bool = false,
+    base_time::Union{Nothing,DateTime} = Nothing,
     flush::Bool = false,
-    size::Int = 10,
-)::RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}}
-    messages_channel =
-        RemoteChannel(() -> Channel{Union{Nothing,Array{UInt8,1}}}(nprocs() * size))
-    @spawnat myid() begin
+    size::Int = 4,
+)
+    @assert myid() == 1
+    global local_log_channel
+    @assert local_log_channel == nothing
+    local_log_channel = Channel{Union{Nothing,Array{UInt8,1}}}(total_threads_count * size)
+
+    global_logger(
+        DistributedLogger(
+            local_log_channel,
+            min_level,
+            show_time,
+            base_time,
+            Dict{Any,Int}(),
+        ),
+    )
+
+    if nprocs() > 1
+        @sync begin
+            remote_log_channel = RemoteChannel(() -> local_log_channel)
+
+            for worker_id = 2:nprocs()
+                @spawnat worker_id begin
+                    global_logger(
+                        DistributedLogger(
+                            ThreadSafeRemoteChannel(remote_log_channel),
+                            min_level,
+                            show_time,
+                            base_time,
+                            Dict{Any,Int}(),
+                        ),
+                    )
+                end
+            end
+        end
+    end
+
+    @spawnat 1 begin
+        global local_log_channel
         while true
-            message = take!(messages_channel)
+            message = take!(local_log_channel)
             message != nothing || break
             write(stream, message)
             flush && Base.flush(stream)
             yield()
         end
+        local_log_channel = nothing  # untested
     end
-    return messages_channel
 end
 
 """
-    DistributedLogger(log_channel; min_level=Info, show_time=true, base_time=nothing)
+    drain_logging()
 
-A logger which emits only one line per log, in a uniform format, for using in a distributed setting.
+This must be run on the main process. It waits until all log messages were printed. Since log
+messages are sent via a channel to a task that actually prints them (on the main process), it is
+useful to be able to ensure that this channel is empty (that is, all messages were printed) in
+certain points of the program, such as between processing phases (e.g. tests), or before terminating
+the program.
+"""
+function drain_logging()
+    @assert myid() == 1
+    global local_log_channel
+    while local_log_channel != nothing && isready(local_log_channel)
+        sleep(0.001)
+        yield
+    end
+end
 
-If `show_time` is `true`, then each message is prefixed by the current time. If `base_time` is set
-to a `DateTime`, the time since that starting point is printed instead.
+"""
+    teardown_logging()
+
+This must be run on the main process. It terminates the spawned logging task, after printing all the
+log messages that were generated up to this point. Log messages generated following this (in other
+threads) are not guaranteed to be printed.
+"""
+function teardown_logging()
+    @assert myid() == 1
+    global local_log_channel
+    @assert local_log_channel != nothing
+    put!(local_log_channel, nothing)
+    drain_logging()
+end
+
+"""
+    DistributedLogger(log_channel, min_level, show_time, base_time, message_limits)
+
+A logger which emits only one line per log, in a uniform format, for use in a distributed setting.
 """
 struct DistributedLogger <: AbstractLogger
-    log_channel::RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}}
+    log_channel::AbstractChannel{Union{Nothing,Array{UInt8,1}}}
     min_level::LogLevel
     show_time::Bool
     base_time::Union{Nothing,DateTime}
     message_limits::Dict{Any,Int}
 end
-
-DistributedLogger(
-    log_channel::RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}};
-    min_level::LogLevel = Info,
-    show_time::Bool = true,
-    base_time::Union{Nothing,DateTime} = nothing,
-) = DistributedLogger(log_channel, min_level, show_time, base_time, Dict{Any,Int}())
 
 function handle_message(
     logger::DistributedLogger,
@@ -113,7 +178,7 @@ function handle_message(
         end
     end
 
-    @printf(iob, "@%02d #%03d ", myid(), threadid())
+    @printf(iob, "@%03d #%03d ", myid(), threadid())
     if level == Logging.Debug
         printstyled(iob, "D", color = Base.debug_color())  # untested
     elseif level == Logging.Info
@@ -141,7 +206,9 @@ end
 shouldlog(logger::DistributedLogger, level, _module, group, id) =
     get(logger.message_limits, id, 1) > 0
 
-min_enabled_level(logger::DistributedLogger) = logger.min_level
+min_enabled_level(logger::DistributedLogger) = begin
+    return logger.min_level
+end
 
 catch_exceptions(logger::DistributedLogger) = false
 

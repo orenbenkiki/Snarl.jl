@@ -6,6 +6,7 @@ module Control
 using Base.Threads
 using Distributed
 
+using ..Channels
 using ..Launched
 using ..Storage
 
@@ -426,7 +427,8 @@ function d_foreach_more_than_nprocs(
 )::Nothing
     @assert batches_count > nprocs()
 
-    batches_channel = RemoteChannel(() -> Channel{Any}(batches_count))
+    local_batches_channel = Channel{Any}(batches_count)
+    remote_batches_channel = RemoteChannel(() -> local_batches_channel)
 
     @sync begin
         next_batch_index = 1
@@ -434,7 +436,7 @@ function d_foreach_more_than_nprocs(
         for worker_id in worker_ids
             @spawnat worker_id begin
                 s_run_from_batches_channel(
-                    batches_channel,
+                    remote_batches_channel,
                     step,
                     storage,
                     batch_values_view(values, batch_size, next_batch_index),
@@ -446,17 +448,17 @@ function d_foreach_more_than_nprocs(
         end
 
         send_batches(
-            batches_channel,
+            remote_batches_channel,
             values,
             batch_size,
             next_batch_index + 1,
             batches_count,
         )
-        send_terminations(batches_channel, nprocs())
-        close(batches_channel)
+        send_terminations(remote_batches_channel, nprocs())
+        close(remote_batches_channel)
 
         s_run_from_batches_channel(
-            batches_channel,
+            local_batches_channel,
             step,
             storage,
             batch_values_view(values, batch_size, next_batch_index),
@@ -476,7 +478,8 @@ function dt_foreach_maximize_processes(
     simd::SimdFlag,
 )::Nothing
     used_threads_count = min(batches_count, total_threads_count)
-    batches_channel = RemoteChannel(() -> Channel{Any}(batches_count))
+    local_batches_channel = Channel{Any}(batches_count)
+    remote_batches_channel = RemoteChannel(() -> local_batches_channel)
     used_threads_of_processes = compute_used_threads_of_processes(used_threads_count)
 
     next_batch_index = 1
@@ -485,8 +488,8 @@ function dt_foreach_maximize_processes(
             process != myid() || continue
             @inbounds used_threads_of_process = used_threads_of_processes[process]
             used_threads_of_process > 0 || continue
-            @spawnat process t_run_from_batches_channel(
-                batches_channel,
+            @spawnat process t_run_from_remote_batches_channel(
+                remote_batches_channel,
                 used_threads_of_process,
                 step,
                 storage,
@@ -506,17 +509,17 @@ function dt_foreach_maximize_processes(
         @threads for index = 1:used_threads_of_process
             if index == used_threads_of_process
                 send_batches(
-                    batches_channel,
+                    remote_batches_channel,
                     values,
                     batch_size,
                     next_batch_index + index,
                     batches_count,
                 )
-                send_terminations(batches_channel, used_threads_count)
-                close(batches_channel)
+                send_terminations(remote_batches_channel, used_threads_count)
+                close(remote_batches_channel)
             end
             s_run_from_batches_channel(
-                batches_channel,
+                local_batches_channel,
                 step,
                 storage,
                 batch_values_view(values, batch_size, next_batch_index + index - 1),
@@ -663,7 +666,7 @@ end
 # Sending:
 
 function send_batches(
-    batches_channel::RemoteChannel{Channel{Any}},
+    batches_channel::Union{RemoteChannel{Channel{Any}}},
     values,
     batch_size::Number,
     first_batch_index::Int,
@@ -675,7 +678,7 @@ function send_batches(
 end
 
 function send_terminations(
-    batches_channel::RemoteChannel{Channel{Any}},
+    batches_channel::Union{RemoteChannel{Channel{Any}}},
     terminations_count::Int,
 )::Nothing
     for _ = 1:terminations_count
@@ -687,7 +690,11 @@ end
 # Serving:
 
 function s_run_from_batches_channel(
-    batches_channel::RemoteChannel{Channel{Any}},
+    batches_channel::Union{
+        Channel{Any},
+        RemoteChannel{Channel{Any}},
+        ThreadSafeRemoteChannel{Any},
+    },
     step::Function,
     storage::ParallelStorage,
     batch_values,
@@ -701,18 +708,19 @@ function s_run_from_batches_channel(
     return nothing
 end
 
-function t_run_from_batches_channel(
-    batches_channel::Distributed.RemoteChannel{Channel{Any}},
+function t_run_from_remote_batches_channel(
+    remote_batches_channel::RemoteChannel{Channel{Any}},
     threads_count::Int,
     step::Function,
     storage::ParallelStorage,
     batch_values::Array{Any,1},
     simd::SimdFlag,
 )::Nothing
+    general_batches_channel = ThreadSafeRemoteChannel(remote_batches_channel)
     @assert length(batch_values) == threads_count
     @sync @threads for index = 1:threads_count
         s_run_from_batches_channel(
-            batches_channel,
+            general_batches_channel,
             step,
             storage,
             batch_values[index],

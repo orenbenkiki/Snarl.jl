@@ -3,9 +3,10 @@ Storage of values for parallel algorithms.
 """
 module Storage
 
+using Distributed
 using Base.Threads
-import Base.Semaphore
 
+import Base.Semaphore
 import Distributed: clear!
 
 export GlobalStorage, LocalStorage, ParallelStorage
@@ -21,9 +22,9 @@ export with_per_process, with_value
 
 Provide storage for a per-process ("global") value for a parallel algorithm.
 
-One instance of the value will be created per process. All process threads will access the same
-instance, so either access would be read-only, thread-safe mutation, or the threads will need to
-coordinate their access in some way.
+One instance of the value will be created per process. All threads of the same process will access
+the same instance, so either access would be read-only, thread-safe mutation, or the threads will
+need to coordinate their access in some way.
 
 The `make` function is used to lazily construct the initial value on each process. If an initial
 `value` is provided, there is no need to provide a `make` function. Note that such a value would be

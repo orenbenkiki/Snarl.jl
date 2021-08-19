@@ -50,16 +50,6 @@ initialize everywhere:
 Snarl.Launched.total_threads_count
 Snarl.Launched.threads_count_of_processes
 ```
-
-Which will be available everywhere. It will also allow you to initialize your own global variables
-everywhere by invoking:
-
-```@docs
-Snarl.Launched.@send_everywhere
-```
-
-Which will be useful when setting up logging.
-
 ## Setting up logging
 
 Logging from a multi-threaded and/or multi-process application requires some form of management.
@@ -72,50 +62,45 @@ Snarl.DistributedLogging
 To use this, on the main process (after launching all worker threads as described above), invoke:
 
 ```@docs
-Snarl.DistributedLogging.central_log_channel
+Snarl.DistributedLogging.setup_logging
 ```
 
-We can now use `send_everywhere` to publish the channel to the central logger to all the worker processors,
-which allows us to everywhere use:
+This will set the `global_logger` in each process to an instance of:
 
 ```@docs
 Snarl.DistributedLogging.DistributedLogger
 ```
 
+This will use a channel to send all log messages to a task (which is run on the main process), which will print
+them one at a time to the stream you provide. You can also (only from the main process):
+
+```@docs
+Snarl.DistributedLogging.drain_logging
+Snarl.DistributedLogging.teardown_logging
+```
+
 For example:
 
 ```
-# This will spawn a local thread just to deal with log messages.
-log_channel = central_log_channel()
-
 # Configure the logging parameters based on command line options etc.
-log_level = Logging.Info
-show_time = true
-base_time = now()
-
-# Publish the above global variables everywhere.
-@send_everywhere base_time base_time
-@send_everywhere log_level log_level
-@send_everywhere log_channel log_channel
-
-# Use them to set up logging everywhere.
-@everywhere begin
-    using Base.Threads
-    using Distributed
-    using Logging
-    using Snarl.DistributedLogging
-
-    global_logger(DistributedLogger(
-        log_channel,
-        min_level = log_level,
-        base_time = base_time,
-    ))
-end
+setup_logging(log_level = Logging.info, show_time = true, base_time = now())
 ```
 
 After this incantation, you can use logging as usual everywhere (e.g., `@info "Foo"`) which will be
 formatted on the invoking thread (indicating which process and thread it was generated in), then
-forwarded to the central spawned thread on the main process, which will write the log message to the
-stream passed to `central_log_channel` (by default, `stderr`). There would be no issue of garbled
-messages due to multiple threads/processes logging at the same time; all messages from everywhere
-would be serialized to a single stream.
+forwarded to the central spawned task on the main process, which will write the log message to the
+stream passed to `setup_logging` (by default, `stderr`). There would be no issue of garbled messages
+due to multiple threads/processes logging at the same time; all messages from everywhere would be
+serialized to a single stream.
+
+In general `Snarl` requires us to be able to communicate between multiple threads of arbitrary
+(possibly different processes); logging is a trivial example. For historical reasons, Julia does
+**not** provide this functionality out of the box. Internally `Snarl` uses:
+
+```@docs
+Snarl.Channels
+Snarl.Channels.ThreadSafeRemoteChannel
+```
+
+However, this is **not** a general solution to the problem; it only works when the remote channel it
+is known to communicate with a different process, not with the current one.

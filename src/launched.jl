@@ -6,41 +6,7 @@ module Launched
 using Base.Threads
 using Distributed
 
-export @send_everywhere
 export launched, threads_count_of_processes, total_threads_count
-
-function run_everywhere(body::Function)::Nothing
-    @sync begin
-        for worker in workers()
-            @spawnat worker body()
-        end
-        body()
-    end
-
-    return nothing
-end
-
-"""
-    @send_everywhere name value
-
-Define a global variable that will exist everywhere. The initial value will be computed once on the
-current (main) process thread and will be sent everywhere else. This allows sending configuration
-values etc. everywhere.
-
-In tests, when all processes run on the same machine, this also allows sharing values such as
-`Atomic` and `SharedArray` everywhere. This will not work in production, where worker processes run
-on different machines.
-"""
-macro send_everywhere(name, value)
-    quote
-        @everywhere name = nothing
-        local value = $(esc(value))
-        run_everywhere() do
-            global $(esc(name))
-            $(esc(name)) = value
-        end
-    end
-end
 
 """
 An array containing the threads count in each of the processes.
@@ -56,6 +22,9 @@ total_threads_count = 0
     launched()
 
 Configure everything once all the worker processes have been spawned.
+
+Note this does not set up the distributed logging. If you want to use the distributed logger (you
+probably do), explicitly invoke `setup_logging` following the call to `launched`.
 """
 function launched()::Nothing
     myid() == 1 || return nothing

@@ -1,19 +1,20 @@
 using Dates
+
+base_time = now()
+
 using Logging
 using Test
+
 using Snarl.DistributedLogging
 
 function base_args_contain(value::AbstractString)
     return findfirst(Base.ARGS .== value) != nothing
 end
 
-log_channel = central_log_channel(flush = true)
-
-function drain_log_channel()
-    while isready(log_channel)
-        sleep(0.001)
-        yield
-    end
+if base_args_contain("--debug") || base_args_contain("-d")
+    min_level = Logging.Debug
+else
+    min_level = Logging.Info
 end
 
 macro test_set(args...)
@@ -22,21 +23,13 @@ macro test_set(args...)
         @views block = args[2:length(args)]
 
         @info name
-        drain_log_channel()
+        drain_logging()
 
         return :(@testset $(name) begin
             $(args...)
-            drain_log_channel()
+            drain_logging()
         end)
     end
-end
-
-base_time = now()
-
-if base_args_contain("--debug") || base_args_contain("-d")
-    log_level = Logging.Debug
-else
-    log_level = Logging.Info
 end
 
 include("affinity.jl")
