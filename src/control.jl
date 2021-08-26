@@ -48,10 +48,12 @@ end
 """
 The default `@simd` directive to apply to the inner loops.
 
-The default `:ivdep` is chosen because the code here assumes all steps are entirely independent. Any
-coordination is expected to be explicit (e.g. by using "global" storage in the `ParallelStorage`).
+The default `false` is the conservative choice, as there may be cross-iteration dependencies (which
+require explicit coordination, e.g. by using "global" storage in the `ParallelStorage`). Also,
+typically when vectorization is a concern, each iteration of the inner loop would contain a nested
+vectorized loop using the appropriate `@simd` directive, or use `LoopVectorization`, etc.
 """
-const default_simd = :ivdep
+const default_simd = false
 
 """
 The default minimal number of steps executed serially in a batch.

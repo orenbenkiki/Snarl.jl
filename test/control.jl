@@ -287,12 +287,14 @@ end
         simd = :invalid,
     )
 end
-
+@test_set "s_foreach/simd/false" begin
+    check_s_foreach(simd = false)
+end
 @test_set "s_foreach/simd/true" begin
     check_s_foreach(simd = true)
 end
-@test_set "s_foreach/simd/false" begin
-    check_s_foreach(simd = false)
+@test_set "s_foreach/simd/ivdep" begin
+    check_s_foreach(simd = :ivdep)
 end
 
 function check_t_foreach(; expected_used_threads::Int = nthreads(), flags...)::Nothing
