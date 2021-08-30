@@ -6,13 +6,15 @@ module Storage
 using Distributed
 using Base.Threads
 
-import Base.Semaphore
+import Base.AbstractLock
+import Base.ReentrantLock
 import Distributed: clear!
 
 export GlobalStorage, LocalStorage, ParallelStorage
 
+export has_per_process!, has_per_step!, has_per_thread!
 export add_per_process!, add_per_step!, add_per_thread!
-export get_per_process, get_per_step, get_per_thread, get_semaphore, get_value
+export get_per_process, get_per_step, get_per_thread, get_lock, get_value
 export clear_per_process!, clear_per_thread!, clear_per_step!, clear!
 export forget_per_process!, forget_per_thread!, forget_per_step!, forget!
 export with_per_process, with_value
@@ -41,7 +43,7 @@ mutable struct GlobalStorage
 
     value::Any
 
-    semaphore::Semaphore
+    lock::ReentrantLock
 
     function GlobalStorage(;
         make::Union{Type,Function,Nothing} = nothing,
@@ -51,9 +53,9 @@ mutable struct GlobalStorage
         if value == nothing
             @assert make != nothing "GlobalStorage is missing both a make function and an initial value"
         else
-            @assert make == nothing "GlobalStorage specifies both a make function and an initial value"  # untested
+            @assert make == nothing "GlobalStorage specifies both a make function and an initial value"
         end
-        return new(make, clear, value, Semaphore(1))
+        return new(make, clear, value, ReentrantLock())
     end
 end
 
@@ -67,13 +69,13 @@ This will create the value if necessary using the registered `make` function.
 function get_value(storage::GlobalStorage)::Any
     if storage.value == nothing
         @assert storage.make != nothing "Getting missing GlobalStorage without a make function"
-        Base.acquire(storage.semaphore)
+        lock(storage.lock)
         try
             if storage.value == nothing
                 storage.value = storage.make()
             end
         finally
-            Base.release(storage.semaphore)
+            unlock(storage.lock)
         end
     end
     return storage.value
@@ -83,13 +85,13 @@ end
     with_value(body::Function, storage::GlobalStorage)::Any
 
 Invoke and return the results of the `body` function, which is given exclusive access to the
-per-process value, by using its semaphore. This assumes no other thread is using `get_value` to get
+per-process value, by using its lock. This assumes no other thread is using `get_value` to get
 direct access to the value in parallel.
 
 This will create the value if necessary using the registered `make` function.
 """
 function with_value(body::Function, storage::GlobalStorage)::Any
-    Base.acquire(storage.semaphore)  # untested
+    lock(storage.lock)  # untested
     try
         if storage.value == nothing  # untested
             @assert storage.make != nothing "Getting missing GlobalStorage without a make function"  # untested
@@ -97,7 +99,7 @@ function with_value(body::Function, storage::GlobalStorage)::Any
         end
         return body(storage.value)  # untested
     finally
-        Base.release(storage.semaphore)  # untested
+        unlock(storage.lock)  # untested
     end
 end
 
@@ -113,12 +115,12 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 function clear!(storage::GlobalStorage)::Nothing
     value = storage.value
     if value != nothing
-        Base.acquire(storage.semaphore)
+        lock(storage.lock)
         try
             value = storage.value
             storage.value = nothing
         finally
-            Base.release(storage.semaphore)
+            unlock(storage.lock)
         end
     end
 
@@ -240,37 +242,59 @@ end
 """
 Provide storage of values for a parallel algorithm.
 
-This provides a generic storage which allows accessing each value by its scope and name. Values are
-created lazily, when threads actually request them. This allows the value creation to be parallel.
+This provides a generic storage which allows accessing each value by its scope and name.
+Contains per-process, per-thread and per-step values.
+
+It is assumed that adding or clearing values is only done serially from the main thread before the
+parallel loop, so these operations are not thread-safe. Values are created lazily, when threads
+actually request them. This allows the value creation to be parallel.
+
+Per-process values are shared between all the threads of the process, so access would be either
+read-only, allow thread-safe mutation, or the threads will need to coordinate their access in some
+way, e.g. by using `with_per_process` or `get_lock`.
+
+Per-thread values maintain their state between steps executing on the same thread. This makes them
+useful to implement reductions when the result data is large.
+
+Per-step values are reset at the start of each step. This allows allocating them once per thread and
+reusing them in each step without worrying about contamination from the previous steps which
+executed on the same thread.
 """
 mutable struct ParallelStorage
-    """
-    A generic container for the per-process (global) stored values.
-
-    Per-process values are shared between all the threads of the process, so access would be either
-    read-only, allow thread-safe mutation, or the threads will need to coordinate their access in
-    some way.
-    """
     per_process::Dict{String,GlobalStorage}
 
-    """
-    A generic container for the per-thread (local) stored values.
-
-    Per-thread values maintain their state between steps executing on the same thread. This makes
-    them useful to implement reductions when the result data is large.
-    """
     per_thread::Dict{String,LocalStorage}
 
-    """
-    A generic container for the per-step (local) stored values.
-
-    Per-step values are reset at the start of each step. This allows allocating them once per thread
-    and reusing them in each step without worrying about contamination from the previous steps which
-    executed on the same thread.
-    """
     per_step::Dict{String,LocalStorage}
 
     ParallelStorage() = new(Dict{String,Any}(), Dict{String,Any}(), Dict{String,Any}())
+end
+
+"""
+    has_per_process(storage::ParallelStorage, name::String)
+
+Return whether the `storage` contains a per-process value with some `name`.
+"""
+function has_per_process!(storage::ParallelStorage, name::String)::Bool
+    return name in storage.per_process  # untested
+end
+
+"""
+    has_per_thread(storage::ParallelStorage, name::String)
+
+Return whether the `storage` contains a per-thread value with some `name`.
+"""
+function has_per_thread!(storage::ParallelStorage, name::String;)::Bool
+    return name in storage.per_thread  # untested
+end
+
+"""
+    has_per_step(storage::ParallelStorage, name::String)
+
+Return whether the `storage` contains a per-step value with some `name`.
+"""
+function has_per_step!(storage::ParallelStorage, name::String;)::Bool
+    return name in storage.per_step  # untested
 end
 
 """
@@ -327,13 +351,13 @@ function add_per_step!(
 end
 
 """
-    get_semaphore(storage::ParallelStorage, name::String)
+    get_lock(storage::ParallelStorage, name::String)
 
-Obtain a semaphore for coordinating access to a per-process value value between all threads of
+Obtain a lock for coordinating access to a per-process value value between all threads of
 the process.
 """
-function get_semaphore(storage::ParallelStorage, name::String)::Semaphore
-    return storage.per_process[name].semaphore  # untested
+function get_lock(storage::ParallelStorage, name::String)::AbstractLock
+    return storage.per_process[name].lock  # untested
 end
 
 """

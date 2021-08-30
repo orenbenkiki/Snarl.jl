@@ -142,7 +142,7 @@ Accessing global data:
 ```@docs
 Snarl.Storage.get_per_process
 Snarl.Storage.with_per_process
-Snarl.Storage.get_semaphore
+Snarl.Storage.get_lock
 ```
 
 Accessing local data:

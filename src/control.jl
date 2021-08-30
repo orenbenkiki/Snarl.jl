@@ -182,13 +182,15 @@ end
     t_foreach(step::Function, storage::ParallelStorage, values::collection;
               batch_factor::Int=default_batch_factor,
               minimal_batch::Int=default_minimal_batch,
-              simd::SimdFlag=default_simd)
+              simd::SimdFlag=default_simd,
+              finalize_thread::Function=none)
 
 Perform a step for each value in the collection, in parallel, using multiple threads in the current
 process.
 
-Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each,
-where on average each thread will execute at most `batch_factor` such batches.
+Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each, where on
+average each thread will execute at most `batch_factor` such batches. When each thread completes all
+its steps, we invoke `finalize_thread` and pass it the `storage`.
 
 Each batch is executed as an inner loop using `s_foreach` with the specified `simd`.
 """
@@ -199,6 +201,7 @@ function t_foreach(
     batch_factor::Int = default_batch_factor,
     minimal_batch::Int = default_minimal_batch,
     simd::SimdFlag = default_simd,
+    finalize_thread::Union{Function,Nothing} = nothing,
 )::Nothing
     batches_count, batch_size = batches_configuration(
         step,
@@ -212,10 +215,29 @@ function t_foreach(
 
     if batches_count <= 1
         s_foreach(step, storage, values, simd = simd)
+        if finalize_thread != nothing
+            finalize_thread(storage)
+        end
     elseif batches_count <= nthreads()
-        t_foreach_up_to_nthreads(step, storage, values, batch_size, batches_count, simd)
+        t_foreach_up_to_nthreads(
+            step,
+            storage,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+            finalize_thread,
+        )
     else
-        t_foreach_more_than_nthreads(step, storage, values, batch_size, batches_count, simd)
+        t_foreach_more_than_nthreads(
+            step,
+            storage,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+            finalize_thread,
+        )
     end
 
     return nothing
@@ -223,13 +245,20 @@ end
 
 """
     d_foreach(step::Function, storage::ParallelStorage, values::collection;
-              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
+              batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd,
+              channel_names::Union{String,collection{String},Nothing}=nothing,
+              finalize_process::Function=nothing)
 
 Perform a step for each value in the collection, in parallel, using a single thread in each of the
 processes (including the current one).
 
-Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each,
-where on average each process (thread) will execute at most `batch_factor` such batches.
+Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each, where on
+average each process (thread) will execute at most `batch_factor` such batches. When each process
+completes all its steps, we invoke `finalize_process` and pass it the `storage`.
+
+If `channel_names` is specified then it should list one or more names of pre-process `Channel`
+values. These values are automatically converted to `ThreadSafeRemoteChannel` values on the remote
+processes so they are safe to use in a multi-threaded application.
 
 Each batch is executed as an inner loop using `s_foreach` with the specified `simd`.
 """
@@ -240,9 +269,14 @@ function d_foreach(
     batch_factor::Int = default_batch_factor,
     minimal_batch::Int = default_minimal_batch,
     simd::SimdFlag = default_simd,
+    channel_names = nothing,
+    finalize_process::Union{Function,Nothing} = nothing,
 )::Nothing
     if nprocs() == 1
         s_foreach(step, storage, values, simd = simd)  # untested
+        if finalize_process != nothing  # untested
+            finalize_process(storage)  # untested
+        end
         return nothing  # untested
     end
 
@@ -258,10 +292,31 @@ function d_foreach(
 
     if batches_count <= 1
         s_foreach(step, storage, values, simd = simd)
+        if finalize_process != nothing
+            finalize_process(storage)
+        end
     elseif batches_count <= nprocs()
-        d_foreach_up_to_nprocs(step, storage, values, batch_size, batches_count, simd)
+        d_foreach_up_to_nprocs(
+            step,
+            storage,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+            channel_names,
+            finalize_process,
+        )
     else
-        d_foreach_more_than_nprocs(step, storage, values, batch_size, batches_count, simd)
+        d_foreach_more_than_nprocs(
+            step,
+            storage,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+            channel_names,
+            finalize_process,
+        )
     end
 
     return nothing
@@ -269,7 +324,9 @@ end
 
 """
     dt_foreach(step::Function, storage::ParallelStorage, values::collection;
-               batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd)
+               batch_factor::Int=default_batch_factor, simd::SimdFlag=default_simd,
+               channel_names::Union{String,collection{String},Nothing}=nothing,
+               finalize_process::Function=nothing)
 
 Perform a step for each value in the collection, in parallel, using multiple threads in multiple
 processes (including the current one).
@@ -281,6 +338,14 @@ If `distribution` is `maximize_processes`, use all the processes (servers), by u
 in each one. If it is `minimize_processes`, use the fewest processes (servers), by using all the
 threads in each one.
 
+If `channel_names` is specified then it should list one or more names of pre-process `Channel`
+values. These values are automatically converted to `ThreadSafeRemoteChannel` values on the remote
+processes so they are safe to use in a multi-threaded application.
+
+When each thread completes all its steps, we invoke `finalize_thread` and pass it the `storage`.
+Likewise, when each process completes all its steps, we invoke `finalize_process` and pass it the
+`storage`.
+
 Each batch is executed as an inner loop using `s_foreach` with the specified `simd`.
 """
 function dt_foreach(
@@ -291,9 +356,20 @@ function dt_foreach(
     minimal_batch::Int = default_minimal_batch,
     distribution::DistributionPolicy = default_distribution,
     simd::SimdFlag = default_simd,
+    channel_names = nothing,
+    finalize_thread::Union{Function,Nothing} = nothing,
+    finalize_process::Union{Function,Nothing} = nothing,
 )::Nothing
     if nprocs() == 1
         s_foreach(step, storage, values, simd = simd)  # untested
+
+        if finalize_thread != nothing  # untested
+            finalize_thread(storage)  # untested
+        end
+        if finalize_process != nothing  # untested
+            finalize_process(storage)  # untested
+        end
+
         return nothing  # untested
     end
 
@@ -311,6 +387,13 @@ function dt_foreach(
 
     if batches_count <= 1
         s_foreach(step, storage, values, simd = simd)
+
+        if finalize_thread != nothing
+            finalize_thread(storage)  # untested
+        end
+        if finalize_process != nothing
+            finalize_process(storage)
+        end
     elseif distribution == :maximize_processes
         dt_foreach_maximize_processes(
             step,
@@ -319,9 +402,24 @@ function dt_foreach(
             batch_size,
             batches_count,
             simd,
+            channel_names,
+            finalize_thread,
+            finalize_process,
         )
     elseif batches_count <= nthreads()
-        t_foreach_up_to_nthreads(step, storage, values, batch_size, batches_count, simd)
+        t_foreach_up_to_nthreads(
+            step,
+            storage,
+            values,
+            batch_size,
+            batches_count,
+            simd,
+            finalize_thread,
+        )
+
+        if finalize_process != nothing
+            finalize_process(storage)
+        end
     else
         dt_foreach_minimize_processes(
             step,
@@ -330,6 +428,9 @@ function dt_foreach(
             batch_size,
             batches_count,
             simd,
+            channel_names,
+            finalize_thread,
+            finalize_process,
         )
     end
 
@@ -342,7 +443,8 @@ function t_foreach_up_to_nthreads(
     values,
     batch_size::Number,
     batches_count::Int,
-    simd::SimdFlag = default_simd,
+    simd::SimdFlag,
+    finalize_thread::Union{Function,Nothing},
 )::Nothing
     @assert batches_count <= nthreads()
 
@@ -353,6 +455,10 @@ function t_foreach_up_to_nthreads(
             batch_values_view(values, batch_size, batch_index),
             simd = simd,
         )
+
+        if finalize_thread != nothing
+            finalize_thread(storage)  # untested
+        end
     end
 
     return nothing
@@ -364,7 +470,8 @@ function t_foreach_more_than_nthreads(
     values,
     batch_size::Number,
     batches_count::Int,
-    simd::SimdFlag = default_simd,
+    simd::SimdFlag,
+    finalize_thread::Union{Function,Nothing},
 )::Nothing
     @assert batches_count > nthreads()
 
@@ -379,9 +486,48 @@ function t_foreach_more_than_nthreads(
             )
             batch_index = atomic_add!(next_batch_index, 1)
         end
+        if finalize_thread != nothing
+            finalize_thread(storage)  # untested
+        end
     end
 
     return nothing
+end
+
+function collect_remote_results_channels(
+    storage::ParallelStorage,
+    channel_names,
+)::Union{Dict{String,RemoteChannel},Nothing}
+    if channel_names == nothing
+        return nothing  # untested
+    end
+
+    remote_results_channels = Dict{String,RemoteChannel}()
+    if isa(channel_names, String)
+        local_results_channel = get_per_process(storage, channel_names)
+        remote_results_channels[channel_names] = RemoteChannel(() -> local_results_channel)
+    else
+        for channel_name in channel_names
+            local_results_channel = get_per_process(storage, channel_name)
+            remote_results_channels[channel_name] =
+                RemoteChannel(() -> local_results_channel)
+        end
+    end
+
+    return remote_results_channels
+end
+
+function inject_remote_results_channels(
+    storage::ParallelStorage,
+    remote_results_channels::Union{Dict{String,RemoteChannel},Nothing},
+)::Nothing
+    if remote_results_channels == nothing
+        return nothing  # untested
+    end
+    for (channel_name, remote_results_channel) in remote_results_channels
+        storage.per_process[channel_name].value =
+            ThreadSafeRemoteChannel(remote_results_channel)
+    end
 end
 
 function d_foreach_up_to_nprocs(
@@ -391,19 +537,30 @@ function d_foreach_up_to_nprocs(
     batch_size::Number,
     batches_count::Int,
     simd::SimdFlag,
+    channel_names,
+    finalize_process::Union{Function,Nothing},
 )::Nothing
     @assert 1 < batches_count && batches_count <= nprocs()
+
+    remote_results_channels = collect_remote_results_channels(storage, channel_names)
 
     @sync begin
         worker_ids = next_workers!(batches_count - 1)
         for batch_index = 1:(batches_count-1)
             @spawnat worker_ids[batch_index] begin
+                inject_remote_results_channels(storage, remote_results_channels)
+
                 s_foreach(
                     step,
                     storage,
                     batch_values_view(values, batch_size, batch_index),
                     simd = simd,
                 )
+
+                if finalize_process != nothing
+                    finalize_process(storage)
+                end
+
                 forget!(storage)
             end
         end
@@ -414,6 +571,10 @@ function d_foreach_up_to_nprocs(
             batch_values_view(values, batch_size, batches_count),
             simd = simd,
         )
+
+        if finalize_process != nothing
+            finalize_process(storage)
+        end
     end
 
     return nothing
@@ -426,17 +587,22 @@ function d_foreach_more_than_nprocs(
     batch_size::Number,
     batches_count::Int,
     simd::SimdFlag,
+    channel_names,
+    finalize_process::Union{Function,Nothing},
 )::Nothing
     @assert batches_count > nprocs()
 
     local_batches_channel = Channel{Any}(batches_count)
     remote_batches_channel = RemoteChannel(() -> local_batches_channel)
+    remote_results_channels = collect_remote_results_channels(storage, channel_names)
 
     @sync begin
         next_batch_index = 1
         worker_ids = next_workers!(nworkers())
         for worker_id in worker_ids
             @spawnat worker_id begin
+                inject_remote_results_channels(storage, remote_results_channels)
+
                 s_run_from_batches_channel(
                     remote_batches_channel,
                     step,
@@ -444,8 +610,14 @@ function d_foreach_more_than_nprocs(
                     batch_values_view(values, batch_size, next_batch_index),
                     simd,
                 )
+
+                if finalize_process != nothing
+                    finalize_process(storage)
+                end
+
                 forget!(storage)
             end
+
             next_batch_index += 1
         end
 
@@ -466,6 +638,10 @@ function d_foreach_more_than_nprocs(
             batch_values_view(values, batch_size, next_batch_index),
             simd,
         )
+
+        if finalize_process != nothing
+            finalize_process(storage)
+        end
     end
 
     return nothing
@@ -478,11 +654,15 @@ function dt_foreach_maximize_processes(
     batch_size::Number,
     batches_count::Int,
     simd::SimdFlag,
+    channel_names,
+    finalize_thread::Union{Function,Nothing},
+    finalize_process::Union{Function,Nothing},
 )::Nothing
     used_threads_count = min(batches_count, total_threads_count)
     local_batches_channel = Channel{Any}(batches_count)
     remote_batches_channel = RemoteChannel(() -> local_batches_channel)
     used_threads_of_processes = compute_used_threads_of_processes(used_threads_count)
+    remote_results_channels = collect_remote_results_channels(storage, channel_names)
 
     next_batch_index = 1
     @sync begin
@@ -490,19 +670,30 @@ function dt_foreach_maximize_processes(
             process != myid() || continue
             @inbounds used_threads_of_process = used_threads_of_processes[process]
             used_threads_of_process > 0 || continue
-            @spawnat process t_run_from_remote_batches_channel(
-                remote_batches_channel,
-                used_threads_of_process,
-                step,
-                storage,
-                batch_values_views(
-                    values,
-                    batch_size,
-                    next_batch_index,
+            @spawnat process begin
+                inject_remote_results_channels(storage, remote_results_channels)
+
+                t_run_from_remote_batches_channel(
+                    remote_batches_channel,
                     used_threads_of_process,
-                ),
-                simd,
-            )
+                    step,
+                    storage,
+                    batch_values_views(
+                        values,
+                        batch_size,
+                        next_batch_index,
+                        used_threads_of_process,
+                    ),
+                    simd,
+                    finalize_thread,
+                )
+
+                if finalize_process != nothing
+                    finalize_process(storage)
+                end
+
+                forget!(storage)
+            end
             next_batch_index += used_threads_of_process
         end
 
@@ -520,6 +711,7 @@ function dt_foreach_maximize_processes(
                 send_terminations(remote_batches_channel, used_threads_count)
                 close(remote_batches_channel)
             end
+
             s_run_from_batches_channel(
                 local_batches_channel,
                 step,
@@ -527,6 +719,14 @@ function dt_foreach_maximize_processes(
                 batch_values_view(values, batch_size, next_batch_index + index - 1),
                 simd,
             )
+
+            if finalize_thread != nothing
+                finalize_thread(storage)  # untested
+            end
+        end
+
+        if finalize_process != nothing
+            finalize_process(storage)
         end
     end
 
@@ -540,12 +740,17 @@ function dt_foreach_minimize_processes(
     batch_size::Number,
     batches_count::Int,
     simd::SimdFlag,
+    channel_names,
+    finalize_thread::Union{Function,Nothing},
+    finalize_process::Union{Function,Nothing},
 )::Nothing
     used_processes = zeros(Bool, nprocs())
     used_processes[myid()] = true
 
     remaining_batches_count = batches_count - nthreads()
     @assert remaining_batches_count > 0
+
+    remote_results_channels = collect_remote_results_channels(storage, channel_names)
 
     @sync begin
         next_batch_index = 1
@@ -560,12 +765,23 @@ function dt_foreach_minimize_processes(
             )
             threads_count > 0 || continue
 
-            @spawnat worker_id t_run_batches(
-                step,
-                storage,
-                batch_values_views(values, batch_size, next_batch_index, threads_count),
-                simd,
-            )
+            @spawnat worker_id begin
+                inject_remote_results_channels(storage, remote_results_channels)
+
+                t_run_batches(
+                    step,
+                    storage,
+                    batch_values_views(values, batch_size, next_batch_index, threads_count),
+                    simd,
+                    finalize_thread,
+                )
+
+                if finalize_process != nothing
+                    finalize_process(storage)
+                end
+
+                forget!(storage)
+            end
             next_batch_index += threads_count
 
             remaining_batches_count -= threads_count
@@ -577,9 +793,14 @@ function dt_foreach_minimize_processes(
             storage,
             batch_values_views(values, batch_size, next_batch_index, nthreads()),
             simd,
+            finalize_thread,
         )
-        next_batch_index += nthreads()
 
+        if finalize_process != nothing
+            finalize_process(storage)
+        end
+
+        next_batch_index += nthreads()
         @assert next_batch_index == batches_count + 1
     end
 end
@@ -717,6 +938,7 @@ function t_run_from_remote_batches_channel(
     storage::ParallelStorage,
     batch_values::Array{Any,1},
     simd::SimdFlag,
+    finalize_thread::Union{Function,Nothing},
 )::Nothing
     general_batches_channel = ThreadSafeRemoteChannel(remote_batches_channel)
     @assert length(batch_values) == threads_count
@@ -728,6 +950,10 @@ function t_run_from_remote_batches_channel(
             batch_values[index],
             simd,
         )
+
+        if finalize_thread != nothing
+            finalize_thread(storage)  # untested
+        end
     end
 
     return nothing
@@ -738,9 +964,14 @@ function t_run_batches(
     storage::ParallelStorage,
     batch_values::Any,
     simd::SimdFlag,
+    finalize_thread::Union{Function,Nothing},
 )::Nothing
     @sync @threads for index = 1:length(batch_values)
         s_foreach(step, storage, batch_values[index], simd = simd)
+
+        if finalize_thread != nothing
+            finalize_thread(storage)  # untested
+        end
     end
 
     return nothing

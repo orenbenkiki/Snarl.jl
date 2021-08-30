@@ -72,8 +72,7 @@ end
     thread::Int
     unique::Int
     resets::Int
-    OperationContext(response_channel::RemoteChannel{Channel{Int}}) =
-        new(myid(), threadid(), next!(UNIQUE), 0)
+    OperationContext() = new(myid(), threadid(), next!(UNIQUE), 0)
 end
 
 @everywhere function increment_resets!(context::OperationContext)::Nothing
@@ -164,8 +163,10 @@ end
 @everywhere function tracked_step(storage::ParallelStorage, step_index::Int)::Int
     @debug "step" step_index
 
-    response_channel = get_per_thread(storage, "response_channel")
-    track_context(trackers.run_step, step_index, OperationContext(response_channel))
+    total_per_thread = get_per_thread(storage, "total")
+    total_per_thread[1] += step_index
+
+    track_context(trackers.run_step, step_index, OperationContext())
 
     per_step_context = get_per_step(storage, "context")
     @assert per_step_context.resets > 0
@@ -176,6 +177,18 @@ end
     track_context(trackers.per_thread, step_index, get_per_thread(storage, "context"))
 
     return step_index
+end
+
+@everywhere function finalize_process(storage::ParallelStorage)::Nothing
+    process_total = 0
+    for thread_id = 1:nthreads()
+        thread_total = get_per_thread(storage, "total", thread_id)[1]
+        process_total += thread_total
+    end
+    results_channel = get_per_process(storage, "results_channel")
+    put!(results_channel, process_total)
+    # TODO: Removing this logging causes a crash?
+    @debug "process_total" results_channel process_total
 end
 
 function check_same_values(values::AbstractArray, expected::Any)::Nothing
@@ -230,36 +243,42 @@ function check_step_used_different_uniques()::Nothing
     end
 end
 
-@everywhere function global_context_maker(storage::ParallelStorage)::Function
-    return () -> OperationContext(get_per_process(storage, "response_channel"))
-end
-
-@everywhere function thread_context_maker(storage::ParallelStorage)::Function
-    return () -> OperationContext(get_per_thread(storage, "response_channel"))
-end
-
-@everywhere function make_response_channel()::RemoteChannel{Channel{Int}}
-    return RemoteChannel(() -> Channel{Int}(1))
-end
-
 function foreach_storage()::ParallelStorage
     storage = ParallelStorage()
-    add_per_process!(storage, "response_channel", make = make_response_channel)
-    add_per_thread!(storage, "response_channel", make = make_response_channel)
-    add_per_process!(storage, "context", make = global_context_maker(storage))
-    add_per_thread!(storage, "context", make = thread_context_maker(storage))
-    add_per_step!(
+    add_per_process!(
         storage,
-        "context",
-        make = thread_context_maker(storage),
-        reset = increment_resets!,
+        "results_channel",
+        value = Channel{Union{Int,Nothing}}(nprocs() + 1),
     )
+    add_per_process!(storage, "context", make = OperationContext)
+    add_per_thread!(storage, "context", make = OperationContext)
+    add_per_step!(storage, "context", make = OperationContext, reset = increment_resets!)
+    add_per_thread!(storage, "total", make = () -> Int[0])
     return storage
 end
 
-function run_foreach(foreach::Function; flags...)::Nothing
+function check_results(results_channel::Channel{Union{Int,Nothing}})::Nothing
+    put!(results_channel, nothing)
+    close(results_channel)
+    total::Int = 0
+    while true
+        result = take!(results_channel)
+        if result == nothing
+            break
+        end
+        total += result
+    end
+    @assert total == steps_count * (steps_count + 1) / 2
+end
+
+function run_foreach(foreach::Function; is_distributed::Bool, flags...)::Nothing
     storage = foreach_storage()
     foreach(tracked_step, storage, 1:steps_count; flags...)
+    if !is_distributed
+        finalize_process(storage)
+    end
+    results_channel = get_per_process(storage, "results_channel")
+    check_results(results_channel)
     forget!(storage)
     return nothing
 end
@@ -267,7 +286,7 @@ end
 function check_s_foreach(; flags...)::Nothing
     @debug "BEGIN S_FOREACH TEST" flags
     reset_test!()
-    run_foreach(s_foreach; flags...)
+    run_foreach(s_foreach; is_distributed = false, flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(1)
     check_step_used_different_uniques()
@@ -300,7 +319,7 @@ end
 function check_t_foreach(; expected_used_threads::Int = nthreads(), flags...)::Nothing
     @debug "BEGIN T_FOREACH TEST" expected_used_threads flags
     reset_test!()
-    run_foreach(t_foreach; flags...)
+    run_foreach(t_foreach; is_distributed = false, flags...)
     check_steps_did_run()
     check_steps_used_threads_of_single_process(expected_used_threads)
     check_step_used_different_uniques()
@@ -328,7 +347,7 @@ end
 end
 
 function check_used_single_thread_of_processes(
-    expected_used_processes::Int = nproc(),
+    expected_used_processes::Int = nprocs(),
 )::Nothing
     thread_of_processes = zeros(Int, nprocs())
     used_processes = 0
@@ -365,7 +384,13 @@ end
 function check_d_foreach(; expected_used_processes::Int = nprocs(), flags...)::Nothing
     @debug "BEGIN D_FOREACH TEST" expected_used_processes flags
     reset_test!()
-    run_foreach(d_foreach; flags...)
+    run_foreach(
+        d_foreach;
+        is_distributed = true,
+        finalize_process = finalize_process,
+        channel_names = "results_channel",
+        flags...,
+    )
     check_steps_did_run()
     check_used_single_thread_of_processes(expected_used_processes)
     check_step_used_different_uniques()
@@ -424,7 +449,13 @@ function check_dt_foreach(;
 )::Nothing
     @debug "BEGIN DT_FOREACH TEST" expected_used_processes expected_used_threads flags
     reset_test!()
-    run_foreach(dt_foreach; flags...)
+    run_foreach(
+        dt_foreach;
+        is_distributed = true,
+        finalize_process = finalize_process,
+        channel_names = ["results_channel"],
+        flags...,
+    )
     check_steps_did_run()
     check_used_all_threads_of_processes(expected_used_processes, expected_used_threads)
     check_step_used_different_uniques()
