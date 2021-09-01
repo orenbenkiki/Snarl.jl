@@ -12,7 +12,7 @@ import Distributed: clear!
 
 export GlobalStorage, LocalStorage, ParallelStorage
 
-export has_per_process!, has_per_step!, has_per_thread!
+export has_per_process, has_per_step, has_per_thread
 export add_per_process!, add_per_step!, add_per_thread!
 export get_per_process, get_per_step, get_per_thread, get_lock, get_value
 export clear_per_process!, clear_per_thread!, clear_per_step!, clear!
@@ -275,7 +275,7 @@ end
 
 Return whether the `storage` contains a per-process value with some `name`.
 """
-function has_per_process!(storage::ParallelStorage, name::String)::Bool
+function has_per_process(storage::ParallelStorage, name::String)::Bool
     return name in storage.per_process  # untested
 end
 
@@ -284,7 +284,7 @@ end
 
 Return whether the `storage` contains a per-thread value with some `name`.
 """
-function has_per_thread!(storage::ParallelStorage, name::String;)::Bool
+function has_per_thread(storage::ParallelStorage, name::String;)::Bool
     return name in storage.per_thread  # untested
 end
 
@@ -293,7 +293,7 @@ end
 
 Return whether the `storage` contains a per-step value with some `name`.
 """
-function has_per_step!(storage::ParallelStorage, name::String;)::Bool
+function has_per_step(storage::ParallelStorage, name::String;)::Bool
     return name in storage.per_step  # untested
 end
 

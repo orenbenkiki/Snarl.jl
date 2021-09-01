@@ -53,11 +53,7 @@ end
 remote_do(serve_counters, 1)
 
 @everywhere function next!(counter::Int)::Int
-    if myid() == 1
-        response = Channel{Int}(1)
-    else
-        response = RemoteChannel(() -> Channel{Int}(1))
-    end
+    response = request_response(request = counters_channel, response = Channel{Int}(1))
     put!(counters_channel, (counter, response))
     return take!(response)
 end
@@ -187,8 +183,7 @@ end
     end
     results_channel = get_per_process(storage, "results_channel")
     put!(results_channel, process_total)
-    # TODO: Removing this logging causes a crash?
-    @debug "process_total" results_channel process_total
+    return nothing
 end
 
 function check_same_values(values::AbstractArray, expected::Any)::Nothing

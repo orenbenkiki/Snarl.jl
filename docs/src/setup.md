@@ -104,3 +104,17 @@ Snarl.Channels.ThreadSafeRemoteChannel
 
 However, this is **not** a general solution to the problem; it only works when the remote channel it
 is known to communicate with a different process, not with the current one.
+
+In addition, note you can't freely pass `Future` object across channels, because they are likewise
+**not** thread-safe. For the common pattern where a thread on some process is listening to requests
+on a channel and needs to send responses back, when the requesters might be other threads on the
+same process or remote processes, create a `Channel` to get the response on instead of creating a
+`Future` to wait for. Then, instead of sending this response channel as-is through the request
+channel, send the results of `request_response` instead; this will wrap the response channel in a
+`RemoteChannel` if the request channel leads to a different process, otherwise it will keep the
+response channel as-is for fast communication within the same process.
+
+```@docs
+Snarl.Channels.ThreadSafeRemoteChannel
+Snarl.Channels.request_response
+```

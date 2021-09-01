@@ -20,7 +20,7 @@ using Distributed
 
 import Base: close, put!, fetch, take!, isready
 
-export ThreadSafeRemoteChannel
+export ThreadSafeRemoteChannel, request_response
 
 """
     ThreadSafeRemoteChannel(remote_channel, local_lock)
@@ -80,6 +80,29 @@ function isready(general_channel::ThreadSafeRemoteChannel{T}) where {T}
     finally
         unlock(general_channel.local_lock)
     end
+end
+
+"""
+    request_response(request_channel::Union{Channel,ThreadSafeRemoteChannel},
+                     response_channel::Channel)::Union{Channel,RemoteChannel}
+
+Given a `request` channel to send a request through, and a `response` to listen through for the
+response, return the properly wrapped response channel to send through the request channel so that
+the service at the other side would be able to safely send the response back.
+
+It would be much simpler to send a `Future` through the request channel, but `Future` objects are
+not thread safe as of writing this code. If/when they become thread safe, this function should be
+removed.
+"""
+function request_response(; request::Channel, response::Channel)::Channel
+    return response_channel
+end
+
+function request_response(;
+    request::ThreadSafeRemoteChannel,
+    response::Channel,
+)::RemoteChannel
+    return RemoteChannel(() -> response_channel)
 end
 
 end # module

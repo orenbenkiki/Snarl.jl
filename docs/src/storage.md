@@ -140,6 +140,7 @@ Snarl.Storage.forget!
 Accessing global data:
 
 ```@docs
+Snarl.Storage.has_per_process
 Snarl.Storage.get_per_process
 Snarl.Storage.with_per_process
 Snarl.Storage.get_lock
@@ -148,6 +149,8 @@ Snarl.Storage.get_lock
 Accessing local data:
 
 ```@docs
+Snarl.Storage.has_per_thread
 Snarl.Storage.get_per_thread
+Snarl.Storage.has_per_step
 Snarl.Storage.get_per_step
 ```
