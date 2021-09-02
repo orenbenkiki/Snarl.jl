@@ -5,7 +5,7 @@ using Distributed
 @everywhere using Snarl.Control
 @everywhere using Snarl.Launched
 @everywhere using Snarl.Storage
-@everywhere using Snarl.Channels
+@everywhere using Snarl.DistributedChannels
 
 @everywhere import Snarl.Storage: clear!
 

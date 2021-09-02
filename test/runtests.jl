@@ -5,6 +5,7 @@ base_time = now()
 using Logging
 using Test
 
+using Snarl.DistributedLocks
 using Snarl.DistributedLogging
 
 function base_args_contain(value::AbstractString)
@@ -23,15 +24,18 @@ macro test_set(args...)
         @views block = args[2:length(args)]
 
         @info name
+        forget_locks()
         drain_logging()
 
         return :(@testset $(name) begin
             $(args...)
+            forget_locks()
             drain_logging()
         end)
     end
 end
 
-include("affinity.jl")
+#TODOX include("affinity.jl")
 include("launch.jl")
-include("control.jl")
+include("locks.jl")
+#TODOX include("control.jl")

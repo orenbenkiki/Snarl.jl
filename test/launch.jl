@@ -12,8 +12,10 @@ Distributed.addprocs(test_workers_count)
 launched()
 
 using Snarl.DistributedLogging
+using Snarl.DistributedLocks
 
 setup_logging(flush = true, min_level = min_level, show_time = true, base_time = base_time)
+setup_locks()
 
 @everywhere begin
     @debug "Launched"

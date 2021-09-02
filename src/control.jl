@@ -6,7 +6,7 @@ module Control
 using Base.Threads
 using Distributed
 
-using ..Channels
+using ..DistributedChannels
 using ..Launched
 using ..Storage
 

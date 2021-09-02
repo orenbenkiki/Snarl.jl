@@ -98,8 +98,8 @@ In general `Snarl` requires us to be able to communicate between multiple thread
 **not** provide this functionality out of the box. Internally `Snarl` uses:
 
 ```@docs
-Snarl.Channels
-Snarl.Channels.ThreadSafeRemoteChannel
+Snarl.DistributedChannels
+Snarl.DistributedChannels.ThreadSafeRemoteChannel
 ```
 
 However, this is **not** a general solution to the problem; it only works when the remote channel it
@@ -115,6 +115,59 @@ channel, send the results of `request_response` instead; this will wrap the resp
 response channel as-is for fast communication within the same process.
 
 ```@docs
-Snarl.Channels.ThreadSafeRemoteChannel
-Snarl.Channels.request_response
+Snarl.DistributedChannels.request_response
+```
+
+## Setting up locks
+
+When running a distributed application across multiple physical processors, it is sometimes
+necessary to coordinate tasks. However, normal Julia locks are not up to the task, as their scope is
+restricted to a single process. To cover this gap, `Snarl` provides a distributed locks mechanism.
+
+```@docs
+Snarl.DistributedLocks
+```
+
+To use this, on the main process (after launching all worker threads as described above), invoke:
+
+```@docs
+Snarl.DistributedLocks.setup_locks
+```
+
+You can control the spawned task, similarly to the logging case above:
+
+```@docs
+Snarl.DistributedLocks.drain_locks
+Snarl.DistributedLocks.teardown_locks
+Snarl.DistributedLocks.forget_locks
+```
+
+To use this, invoke `with_lock`:
+
+```@docs
+Snarl.DistributedLocks.with_distributed_lock
+```
+
+For example:
+
+```
+with_distributed_lock() do is_first
+    ... Critical section across all processes and threads ...
+end
+```
+
+Providing `is_first` is useful when code on different processes wants to create a distributed shared
+resource (e.g., generate some file which can be accessed by all the worker processes using a shared
+networked file system). The idiom is as follows:
+
+```
+if resource_does_not_exist()
+    with_distributed_lock(name_of_resource) do is_first
+        if is_first
+            ... actually create the resource, which may take a long time ...
+        end
+        ... exclusive access to the resource ...
+    end
+end
+... resource is now guaranteed to have been created ...
 ```

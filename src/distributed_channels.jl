@@ -1,5 +1,5 @@
 """
-Thread-safe remote channels.
+Thread-safe remote (distributed) channels.
 
 In `Snarl`, a remote channel is always used to talk to another process (in general, remote channels
 do allow communication within the same process as well). This allows us to simply associate a global
@@ -13,7 +13,7 @@ in different threads of the same process. As of writing this, it doesn't seem li
 any time soon. If/when it does, then this code should be deleted and the rest of the code should be
 modified to use the standard thread-safe remote channels.
 """
-module Channels
+module DistributedChannels
 
 using Base.Threads
 using Distributed
@@ -37,48 +37,48 @@ function ThreadSafeRemoteChannel(remote_channel::RemoteChannel)::ThreadSafeRemot
     return ThreadSafeRemoteChannel(remote_channel, ReentrantLock())
 end
 
-function close(general_channel::ThreadSafeRemoteChannel)
-    lock(general_channel.local_lock)
+function close(thread_safe_channel::ThreadSafeRemoteChannel)::Any
+    lock(thread_safe_channel.local_lock)  # untested
     try
-        close(general_channel.remote_channel)
+        return close(thread_safe_channel.remote_channel)  # untested
     finally
-        unlock(general_channel.local_lock)
+        unlock(thread_safe_channel.local_lock)  # untested
     end
 end
 
-function put!(general_channel::ThreadSafeRemoteChannel{T}, value) where {T}
-    lock(general_channel.local_lock)
+function put!(thread_safe_channel::ThreadSafeRemoteChannel{T}, value)::Any where {T}
+    lock(thread_safe_channel.local_lock)
     try
-        put!(general_channel.remote_channel, value)
+        return put!(thread_safe_channel.remote_channel, value)
     finally
-        unlock(general_channel.local_lock)
+        unlock(thread_safe_channel.local_lock)
     end
 end
 
-function fetch(general_channel::ThreadSafeRemoteChannel{T}, value) where {T}
-    lock(general_channel.local_lock)
+function fetch(thread_safe_channel::ThreadSafeRemoteChannel{T}, value)::Any where {T}
+    lock(thread_safe_channel.local_lock)  # untested
     try
-        fetch(general_channel.remote_channel, value)
+        return fetch(thread_safe_channel.remote_channel, value)  # untested
     finally
-        unlock(general_channel.local_lock)
+        unlock(thread_safe_channel.local_lock)  # untested
     end
 end
 
-function take!(general_channel::ThreadSafeRemoteChannel{T}) where {T}
-    lock(general_channel.local_lock)
+function take!(thread_safe_channel::ThreadSafeRemoteChannel{T})::Any where {T}
+    lock(thread_safe_channel.local_lock)  # untested
     try
-        return take!(general_channel.remote_channel)
+        return take!(thread_safe_channel.remote_channel)  # untested
     finally
-        unlock(general_channel.local_lock)
+        unlock(thread_safe_channel.local_lock)  # untested
     end
 end
 
-function isready(general_channel::ThreadSafeRemoteChannel{T}) where {T}
-    lock(general_channel.local_lock)
+function isready(thread_safe_channel::ThreadSafeRemoteChannel{T})::Bool where {T}
+    lock(thread_safe_channel.local_lock)  # untested
     try
-        return isready(general_channel.remote_channel)
+        return isready(thread_safe_channel.remote_channel)  # untested
     finally
-        unlock(general_channel.local_lock)
+        unlock(thread_safe_channel.local_lock)  # untested
     end
 end
 
@@ -94,15 +94,15 @@ It would be much simpler to send a `Future` through the request channel, but `Fu
 not thread safe as of writing this code. If/when they become thread safe, this function should be
 removed.
 """
-function request_response(; request::Channel, response::Channel)::Channel
-    return response_channel
-end
-
 function request_response(;
-    request::ThreadSafeRemoteChannel,
+    request::Union{Channel,ThreadSafeRemoteChannel},
     response::Channel,
-)::RemoteChannel
-    return RemoteChannel(() -> response_channel)
+)::Union{Channel,RemoteChannel}
+    if request isa Channel
+        return response
+    else
+        return RemoteChannel(() -> response)
+    end
 end
 
 end # module

@@ -12,7 +12,7 @@ using Distributed
 using Logging
 using Printf
 
-using ..Channels
+using ..DistributedChannels
 using ..Launched
 
 import Base.CoreLogging:
@@ -28,11 +28,15 @@ export setup_logging, drain_logging, teardown_logging, DistributedLogger
 local_log_channel = nothing
 
 """
-    setup_logging(stream=stderr; flush=false, size=4)::RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}}
+    setup_logging(stream=stderr;
+                  min_level=Logging.Warn, flush=false,
+                  show_time=false, base_time=Nothing,
+                  size=4)::Nothing
 
 This can only be run in the main process, and should be done immediately after launching all the
 worker processes. It will spawn a task that listens for log messages arriving on some channel, and
-write them to the specified stream.
+write them to the specified stream if their level is at least `min_level`. If `flush` then the
+stream is flushed after writing each message.
 
 If `show_time` is `true`, then each message is prefixed by the current time. If `base_time` is set
 to a `DateTime`, the time since that starting point is printed instead. If `flush` is set, then the
@@ -51,7 +55,7 @@ function setup_logging(
     base_time::Union{Nothing,DateTime} = Nothing,
     flush::Bool = false,
     size::Int = 4,
-)
+)::Nothing
     @assert myid() == 1
     global local_log_channel
     @assert local_log_channel == nothing
@@ -94,10 +98,11 @@ function setup_logging(
             message != nothing || break
             write(stream, message)
             flush && Base.flush(stream)
-            yield()
         end
         local_log_channel = nothing  # untested
     end
+
+    return nothing
 end
 
 """
@@ -109,13 +114,14 @@ useful to be able to ensure that this channel is empty (that is, all messages we
 certain points of the program, such as between processing phases (e.g. tests), or before terminating
 the program.
 """
-function drain_logging()
+function drain_logging()::Nothing
     @assert myid() == 1
     global local_log_channel
     while local_log_channel != nothing && isready(local_log_channel)
         sleep(0.001)
         yield
     end
+    return nothing
 end
 
 """
@@ -125,12 +131,13 @@ This must be run on the main process. It terminates the spawned logging task, af
 log messages that were generated up to this point. Log messages generated following this (in other
 threads) are not guaranteed to be printed.
 """
-function teardown_logging()
-    @assert myid() == 1
-    global local_log_channel
-    @assert local_log_channel != nothing
-    put!(local_log_channel, nothing)
-    drain_logging()
+function teardown_logging()::Nothing
+    @assert myid() == 1  # untested
+    global local_log_channel  # untested
+    @assert local_log_channel != nothing  # untested
+    put!(local_log_channel, nothing)  # untested
+    drain_logging()  # untested
+    return nothing  # untested
 end
 
 """

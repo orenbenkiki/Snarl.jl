@@ -19,8 +19,9 @@ considered to be special cases of the general multi-threaded in multi-process co
 module Snarl
 
 include("launched.jl")
-include("channels.jl")
+include("distributed_channels.jl")
 include("distributed_logging.jl")
+include("distributed_locks.jl")
 include("storage.jl")
 include("control.jl")
 
