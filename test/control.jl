@@ -458,15 +458,6 @@ function check_dt_foreach(;
     return nothing
 end
 
-@test_set "dt_foreach/distribution/invalid" begin
-    @test_throws ArgumentError dt_foreach(
-        tracked_step,
-        foreach_storage(),
-        1:1,
-        distribution = :invalid,
-    )
-end
-
 @test_set "dt_foreach/default" begin
     check_dt_foreach()
 end
@@ -484,7 +475,7 @@ end
         expected_used_processes = nprocs(),
         expected_used_threads = nprocs(),
         minimal_batch = ceil(Int, steps_count / nprocs()),
-        distribution = :maximize_processes,
+        distribution = MaximizeProcesses,
     )
 end
 
@@ -493,7 +484,7 @@ end
         expected_used_processes = 1,
         expected_used_threads = nthreads(),
         minimal_batch = ceil(Int, steps_count / nthreads()),
-        distribution = :minimize_processes,
+        distribution = MinimizeProcesses,
     )
 end
 
@@ -502,7 +493,7 @@ end
         expected_used_processes = nprocs(),
         expected_used_threads = nprocs(),
         minimal_batch = ceil(Int, steps_count / nprocs()),
-        distribution = :maximize_processes,
+        distribution = MaximizeProcesses,
     )
 end
 
@@ -512,6 +503,6 @@ end
         expected_used_processes = 2,
         expected_used_threads = floor(Int, steps_count / minimal_batch),
         minimal_batch = minimal_batch,
-        distribution = :minimize_processes,
+        distribution = MinimizeProcesses,
     )
 end

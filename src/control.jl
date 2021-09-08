@@ -10,11 +10,19 @@ using ..DistributedChannels
 using ..Launched
 using ..Storage
 
-export SimdFlag, PreferFlag
+export default_batch_factor
+export default_maximize_distribution
+export default_minimal_batch
+export default_simd
+export d_foreach
+export DistributionPolicy
+export dt_foreach
+export MaximizeProcesses
+export MinimizeProcesses
 export next_worker!
-export default_batch_factor,
-    default_minimal_batch, default_maximize_distribution, default_simd
-export s_foreach, t_foreach, d_foreach, dt_foreach
+export s_foreach
+export SimdFlag
+export t_foreach
 
 # Data types:
 
@@ -23,25 +31,17 @@ The `@simd` directive to use for an inner loop.
 
 Valid values are `false`, `true` or `:ivdep`.
 """
-const SimdFlag = Union{Bool,Symbol,Val{true},Val{false},Val{:ivdep}}
+const SimdFlag = Union{Bool,Symbol}
 
 """
 The policy to use to distribute multi-threaded work across processes.
 
-Specifying `:maximize_processes` uses all the processes (servers), by using fewer threads in each
+Specifying `MaximizeProcesses` uses all the processes (servers), by using fewer threads in each one.
+
+Specifying `MinimizeProcesses` uses the fewest processes (servers), by using all the threads in each
 one.
-
-Specifying `:minimize_processes` uses the fewest processes (servers), by using all the threads in
-each one.
 """
-const DistributionPolicy = Union{Symbol,Val{:maximize_processes},Val{:minimize_processes}}
-
-function verify_distribution(distribution::DistributionPolicy)::Nothing
-    if distribution != :maximize_processes && distribution != :minimize_processes
-        throw(ArgumentError("Invalid distribution policy: $(distribution)"))
-    end
-    return nothing
-end
+@enum DistributionPolicy MaximizeProcesses MinimizeProcesses
 
 # Default parameter values:
 
@@ -81,11 +81,11 @@ Using `maximize_processes` uses all the processes (servers), by using fewer thre
 Using `minimize_processes` uses the fewest processes (servers), by using all the threads in each
 one.
 
-The default is `maximize_processes` under the assumption that running few threads on each process
+The default is `MaximizeProcesses` under the assumption that running few threads on each process
 (that is, server) will gain from more per-server resources such as memory and I/O bandwidth. It is
 also more likely that less threads will run as weaker hyper-threads.
 """
-const default_distribution = :maximize_processes
+const default_distribution = MaximizeProcesses
 
 # Workers:
 
@@ -373,8 +373,6 @@ function dt_foreach(
         return nothing  # untested
     end
 
-    verify_distribution(distribution)
-
     batches_count, batch_size = batches_configuration(
         step,
         storage,
@@ -394,7 +392,7 @@ function dt_foreach(
         if finalize_process != nothing
             finalize_process(storage)
         end
-    elseif distribution == :maximize_processes
+    elseif distribution == MaximizeProcesses
         dt_foreach_maximize_processes(
             step,
             storage,
