@@ -387,11 +387,15 @@ end
                storage::Union{ParallelStorage,Nothing}=nothing,
                channel_names::Union{String,collection{String},Nothing}=nothing,
                simd::SimdFlag=default_simd,
+               max_threads::Union{Int,Nothing} = nothing,
+               max_processes::Union{Int,Nothing} = nothing,
                finalize_thread::Function=nothing,
                finalize_process::Function=nothing)
 
 Perform a step for each value in the collection, in parallel, using multiple threads in multiple
-processes (including the current one).
+processes (including the current one). If `max_processes` is specified it must be positive, and the
+code will use at most this number of processes. If `max_threads` is specified it must be positive,
+and the code will use at most this number of threads in each process.
 
 Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each,
 where on average each thread will execute at most `batch_factor` such batches.
@@ -419,19 +423,46 @@ function dt_foreach(
     storage::Union{ParallelStorage,Nothing} = nothing,
     channel_names = nothing,
     simd::SimdFlag = default_simd,
+    max_threads::Union{Int,Nothing} = nothing,
+    max_processes::Union{Int,Nothing} = nothing,
     finalize_thread::Union{Function,Nothing} = nothing,
     finalize_process::Union{Function,Nothing} = nothing,
 )::Nothing
-    if nprocs() == 1
+    if max_processes == nothing
+        max_processes = nprocs()
+    else
+        max_processes = min(max_processes, nprocs())  # untested
+    end
+
+    if max_processes == 1
         t_foreach(  # untested
             step,
             values,
             storage = storage,
             simd = simd,
+            max_threads = max_threads,
             finalize_thread = finalize_thread,
         )
         finalize(finalize_process, storage)  # untested
         return nothing  # untested
+    end
+
+    if max_processes == nprocs() && max_threads == nothing
+        max_runners = total_threads_count
+        max_local_threads = nthreads()
+        worker_ids = [process for process in 1:nprocs() if process != myid()]
+        max_threads_of_workers = threads_count_of_processes[worker_ids]
+    else
+        worker_ids = next_workers!(max_processes - 1)  # untested
+        if max_threads == nothing  # untested
+            max_local_threads = nthreads()  # untested
+            max_threads_of_workers = threads_count_of_processes[worker_ids]  # untested
+        else
+            max_local_threads = min(max_threads, nthreads())  # untested
+            max_threads_of_workers =  # untested
+                sum(broadcast(min, max_threads, threads_count_of_processes[worker_ids]))
+        end
+        max_runners = max_local_threads + sum(max_threads_of_workers)  # untested
     end
 
     batches_count, batch_size = batches_configuration(
@@ -441,7 +472,7 @@ function dt_foreach(
         minimal_batch,
         storage,
         simd,
-        total_threads_count,
+        max_runners,
     )
 
     if batches_count <= 1
@@ -459,8 +490,11 @@ function dt_foreach(
             simd,
             finalize_thread,
             finalize_process,
+            max_local_threads,
+            worker_ids,
+            max_threads_of_workers,
         )
-    elseif batches_count <= nthreads()
+    elseif batches_count <= max_local_threads
         t_foreach_up_to_nthreads(
             step,
             values,
@@ -468,7 +502,7 @@ function dt_foreach(
             batches_count,
             storage,
             simd,
-            nthreads(),
+            max_local_threads,
             finalize_thread,
         )
         finalize(finalize_process, storage)
@@ -483,6 +517,9 @@ function dt_foreach(
             simd,
             finalize_thread,
             finalize_process,
+            max_local_threads,
+            worker_ids,
+            max_threads_of_workers,
         )
     end
 
@@ -706,11 +743,19 @@ function dt_foreach_maximize_processes(
     simd::SimdFlag,
     finalize_thread::Union{Function,Nothing},
     finalize_process::Union{Function,Nothing},
+    max_local_threads::Int,
+    worker_ids::Vector{Int},
+    max_threads_of_workers::Vector{Int},
 )::Nothing
-    used_threads_count = min(batches_count, total_threads_count)
+    used_threads_count = min(batches_count, max_local_threads + sum(max_threads_of_workers))
     local_batches_channel = Channel{Any}(batches_count)
     remote_batches_channel = RemoteChannel(() -> local_batches_channel)
-    used_threads_of_processes = compute_used_threads_of_processes(used_threads_count)
+    used_threads_of_processes = compute_used_threads_of_processes(
+        used_threads_count,
+        max_local_threads,
+        worker_ids,
+        max_threads_of_workers,
+    )
     remote_results_channels = collect_remote_results_channels(storage, channel_names)
 
     next_batch_index = 1
@@ -724,7 +769,6 @@ function dt_foreach_maximize_processes(
 
                 t_run_from_remote_batches_channel(
                     remote_batches_channel,
-                    used_threads_of_process,
                     step,
                     batch_values_views(
                         values,
@@ -735,6 +779,7 @@ function dt_foreach_maximize_processes(
                     storage,
                     simd,
                     finalize_thread,
+                    used_threads_of_process,
                 )
 
                 finalize(finalize_process, storage)
@@ -785,27 +830,20 @@ function dt_foreach_minimize_processes(
     simd::SimdFlag,
     finalize_thread::Union{Function,Nothing},
     finalize_process::Union{Function,Nothing},
+    max_local_threads::Int,
+    worker_ids::Vector{Int},
+    max_threads_of_workers::Vector{Int},
 )::Nothing
-    used_processes = zeros(Bool, nprocs())
-    used_processes[myid()] = true
-
-    remaining_batches_count = batches_count - nthreads()
+    remaining_batches_count = batches_count - max_local_threads
     @assert remaining_batches_count > 0
 
     remote_results_channels = collect_remote_results_channels(storage, channel_names)
 
     @sync begin
         next_batch_index = 1
-        while true
-            worker_id = next_worker!()
-            used_processes[worker_id] && continue
-            used_processes[worker_id] = true
-
-            threads_count = @inbounds min(
-                remaining_batches_count,
-                threads_count_of_processes[worker_id],
-            )
-            threads_count > 0 || continue
+        for (worker_id, max_threads_of_worker) in zip(worker_ids, max_threads_of_workers)
+            threads_count = min(remaining_batches_count, max_threads_of_worker)
+            @assert threads_count > 0
 
             @spawnat worker_id begin
                 inject_remote_results_channels(storage, remote_results_channels)
@@ -829,7 +867,7 @@ function dt_foreach_minimize_processes(
 
         t_run_batches(
             step,
-            batch_values_views(values, batch_size, next_batch_index, nthreads()),
+            batch_values_views(values, batch_size, next_batch_index, max_local_threads),
             storage,
             simd,
             finalize_thread,
@@ -873,22 +911,28 @@ function batches_configuration(
 end
 
 # TODO: This could be made more efficient if needed.
-function compute_used_threads_of_processes(used_threads_count::Int)::Array{Int,1}
+function compute_used_threads_of_processes(
+    used_threads_count::Int,
+    max_local_threads::Int,
+    worker_ids::Vector{Int},
+    max_threads_of_workers::Vector{Int},
+)::Array{Int,1}
     used_threads_of_processes = zeros(Int, nprocs())
 
     remaining_threads_count = used_threads_count
     @assert remaining_threads_count > 0
 
     while true
-        for offset = 1:nprocs()
-            process = if (offset == 1)
-                myid()
+        for offset = 1:(length(worker_ids)+1)
+            if (offset == 1)
+                max_threads_of_process = max_local_threads
+                process = myid()
             else
-                next_worker!()
+                @inbounds max_threads_of_process = max_threads_of_workers[offset-1]
+                process = worker_ids[offset-1]
             end
 
-            if @inbounds used_threads_of_processes[process] <
-                         threads_count_of_processes[process]
+            if @inbounds used_threads_of_processes[process] < max_threads_of_process
                 @inbounds used_threads_of_processes[process] += 1
                 remaining_threads_count -= 1
                 if remaining_threads_count == 0
@@ -970,12 +1014,12 @@ end
 
 function t_run_from_remote_batches_channel(
     remote_batches_channel::RemoteChannel{Channel{Any}},
-    threads_count::Int,
     step::Function,
     batch_values::Array{Any,1},
     storage::Union{ParallelStorage,Nothing},
     simd::SimdFlag,
     finalize_thread::Union{Function,Nothing},
+    threads_count::Int,
 )::Nothing
     general_batches_channel = ThreadSafeRemoteChannel(remote_batches_channel)
     @assert length(batch_values) == threads_count
