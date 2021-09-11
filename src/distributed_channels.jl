@@ -65,11 +65,11 @@ function fetch(thread_safe_channel::ThreadSafeRemoteChannel{T}, value)::Any wher
 end
 
 function take!(thread_safe_channel::ThreadSafeRemoteChannel{T})::Any where {T}
-    lock(thread_safe_channel.local_lock)  # untested
+    lock(thread_safe_channel.local_lock)
     try
-        return take!(thread_safe_channel.remote_channel)  # untested
+        return take!(thread_safe_channel.remote_channel)
     finally
-        unlock(thread_safe_channel.local_lock)  # untested
+        unlock(thread_safe_channel.local_lock)
     end
 end
 

@@ -156,7 +156,7 @@ function reset_test!()::Nothing
     return nothing
 end
 
-@everywhere function tracked_step(storage::ParallelStorage, step_index::Int)::Int
+@everywhere function tracked_step(step_index::Int, storage::ParallelStorage)::Int
     @debug "step" step_index
 
     total_per_thread = get_per_thread(storage, "total")
@@ -268,7 +268,7 @@ end
 
 function run_foreach(foreach::Function; is_distributed::Bool, flags...)::Nothing
     storage = foreach_storage()
-    foreach(tracked_step, storage, 1:steps_count; flags...)
+    foreach(tracked_step, 1:steps_count; storage = storage, flags...)
     if !is_distributed
         finalize_process(storage)
     end
@@ -296,8 +296,8 @@ end
 @test_set "s_foreach/simd/invalid" begin
     @test_throws ArgumentError s_foreach(
         tracked_step,
-        foreach_storage(),
         1:1,
+        storage = foreach_storage(),
         simd = :invalid,
     )
 end

@@ -35,7 +35,7 @@ macro test_set(args...)
     end
 end
 
-#TODOX include("affinity.jl")
+include("affinity.jl")
 include("launch.jl")
 include("locks.jl")
-#TODOX include("control.jl")
+include("control.jl")
