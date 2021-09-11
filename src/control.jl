@@ -206,10 +206,12 @@ end
               minimal_batch::Int=default_minimal_batch,
               storage::Union{ParallelStorage,Nothing}=nothing,
               simd::SimdFlag=default_simd,
+              max_threads::Union{Int,Nothing}=nothing,
               finalize_thread::Function=none)
 
 Perform a step for each value in the collection, in parallel, using multiple threads in the current
-process.
+process. If `max_threads` is specified it must be positive, and the code will use at most this
+number of threads.
 
 Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each, where on
 average each thread will execute at most `batch_factor` such batches. When each thread completes all
@@ -225,9 +227,20 @@ function t_foreach(
     minimal_batch::Int = default_minimal_batch,
     storage::Union{ParallelStorage,Nothing} = nothing,
     simd::SimdFlag = default_simd,
+    max_threads::Union{Int,Nothing} = nothing,
     finalize_thread::Union{Function,Nothing} = nothing,
 )::Nothing
-    if nthreads() == 1
+    if max_threads == nothing
+        max_threads = nthreads()
+    else
+        max_threads = min(max_threads, nthreads())  # untested
+    end
+
+    if max_threads < 1
+        error("Invalid non-positive max_threads $(max_threads)")  # untested
+    end
+
+    if max_threads == 1
         s_foreach(step, values, storage = storage, simd = simd)  # untested
         finalize(finalize_thread, storage)  # untested
         return nothing  # untested
@@ -240,13 +253,13 @@ function t_foreach(
         minimal_batch,
         storage,
         simd,
-        nthreads(),
+        max_threads,
     )
 
     if batches_count <= 1
         s_foreach(step, values, storage = storage, simd = simd)
         finalize(finalize_thread, storage)
-    elseif batches_count <= nthreads()
+    elseif batches_count <= max_threads
         t_foreach_up_to_nthreads(
             step,
             values,
@@ -254,6 +267,7 @@ function t_foreach(
             batches_count,
             storage,
             simd,
+            max_threads,
             finalize_thread,
         )
     else
@@ -264,6 +278,7 @@ function t_foreach(
             batches_count,
             storage,
             simd,
+            max_threads,
             finalize_thread,
         )
     end
@@ -278,10 +293,12 @@ end
               storage::Union{ParallelStorage,Nothing}=nothing,
               channel_names::Union{String,collection{String},Nothing}=nothing,
               simd::SimdFlag=default_simd,
+              max_processes::Union{Int,Nothing}=nothing,
               finalize_process::Function=nothing)
 
 Perform a step for each value in the collection, in parallel, using a single thread in each of the
-processes (including the current one).
+processes (including the current one). If `max_processes` is specified it must be positive, and the
+code will use at most this number of processes.
 
 Scheduling is done in equal-size batches containing at least `minimal_batch` steps in each, where on
 average each process (thread) will execute at most `batch_factor` such batches. When each process
@@ -302,9 +319,20 @@ function d_foreach(
     storage::Union{ParallelStorage,Nothing} = nothing,
     channel_names = nothing,
     simd::SimdFlag = default_simd,
+    max_processes::Union{Int,Nothing} = nothing,
     finalize_process::Union{Function,Nothing} = nothing,
 )::Nothing
-    if nprocs() == 1
+    if max_processes == nothing
+        max_processes = nprocs()
+    else
+        max_processes = min(max_processes, nprocs())  # untested
+    end
+
+    if max_processes < 1
+        error("Invalid non-positive max_processes $(max_processes)")  # untested
+    end
+
+    if max_processes == 1
         s_foreach(step, values, storage = storage, simd = simd)  # untested
         finalize(finalize_process, storage)  # untested
         return nothing  # untested
@@ -317,13 +345,13 @@ function d_foreach(
         minimal_batch,
         storage,
         simd,
-        nprocs(),
+        max_processes,
     )
 
     if batches_count <= 1
         s_foreach(step, values, storage = storage, simd = simd)
         finalize(finalize_process, storage)
-    elseif batches_count <= nprocs()
+    elseif batches_count <= max_processes
         d_foreach_up_to_nprocs(
             step,
             values,
@@ -332,6 +360,7 @@ function d_foreach(
             storage,
             channel_names,
             simd,
+            max_processes,
             finalize_process,
         )
     else
@@ -343,6 +372,7 @@ function d_foreach(
             storage,
             channel_names,
             simd,
+            max_processes,
             finalize_process,
         )
     end
@@ -357,6 +387,7 @@ end
                storage::Union{ParallelStorage,Nothing}=nothing,
                channel_names::Union{String,collection{String},Nothing}=nothing,
                simd::SimdFlag=default_simd,
+               finalize_thread::Function=nothing,
                finalize_process::Function=nothing)
 
 Perform a step for each value in the collection, in parallel, using multiple threads in multiple
@@ -437,6 +468,7 @@ function dt_foreach(
             batches_count,
             storage,
             simd,
+            nthreads(),
             finalize_thread,
         )
         finalize(finalize_process, storage)
@@ -464,9 +496,10 @@ function t_foreach_up_to_nthreads(
     batches_count::Int,
     storage::Union{ParallelStorage,Nothing},
     simd::SimdFlag,
+    max_threads::Int,
     finalize_thread::Union{Function,Nothing},
 )::Nothing
-    @assert batches_count <= nthreads()
+    @assert batches_count <= max_threads
 
     @sync @threads for batch_index = 1:batches_count
         s_foreach(
@@ -488,12 +521,13 @@ function t_foreach_more_than_nthreads(
     batches_count::Int,
     storage::Union{ParallelStorage,Nothing},
     simd::SimdFlag,
+    max_threads::Int,
     finalize_thread::Union{Function,Nothing},
 )::Nothing
-    @assert batches_count > nthreads()
+    @assert batches_count > max_threads
 
-    next_batch_index = Atomic{Int}(nthreads() + 1)
-    @sync @threads for batch_index = 1:nthreads()
+    next_batch_index = Atomic{Int}(max_threads + 1)
+    @sync @threads for batch_index = 1:max_threads
         while batch_index <= batches_count
             s_foreach(
                 step,
@@ -560,9 +594,10 @@ function d_foreach_up_to_nprocs(
     storage::Union{ParallelStorage,Nothing},
     channel_names,
     simd::SimdFlag,
+    max_processes::Int,
     finalize_process::Union{Function,Nothing},
 )::Nothing
-    @assert 1 < batches_count && batches_count <= nprocs()
+    @assert 1 < batches_count && batches_count <= max_processes
 
     remote_results_channels = collect_remote_results_channels(storage, channel_names)
 
@@ -605,9 +640,11 @@ function d_foreach_more_than_nprocs(
     storage::Union{ParallelStorage,Nothing},
     channel_names,
     simd::SimdFlag,
+    max_processes::Int,
     finalize_process::Union{Function,Nothing},
 )::Nothing
-    @assert batches_count > nprocs()
+    @assert max_processes > 1
+    @assert batches_count > max_processes
 
     local_batches_channel = Channel{Any}(batches_count)
     remote_batches_channel = RemoteChannel(() -> local_batches_channel)
@@ -615,7 +652,7 @@ function d_foreach_more_than_nprocs(
 
     @sync begin
         next_batch_index = 1
-        worker_ids = next_workers!(nworkers())
+        worker_ids = next_workers!(max_processes - 1)
         for worker_id in worker_ids
             @spawnat worker_id begin
                 inject_remote_results_channels(storage, remote_results_channels)
@@ -642,7 +679,7 @@ function d_foreach_more_than_nprocs(
             next_batch_index + 1,
             batches_count,
         )
-        send_terminations(remote_batches_channel, nprocs())
+        send_terminations(remote_batches_channel, max_processes)
         close(remote_batches_channel)
 
         s_run_from_batches_channel(
