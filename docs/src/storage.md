@@ -154,3 +154,14 @@ Snarl.Storage.get_per_thread
 Snarl.Storage.has_per_step
 Snarl.Storage.get_per_step
 ```
+
+### Send/Receive
+
+Internally, the code uses the following two functions to prepare the container for being
+sent across the network to a remote process, and to receive the container on the remote
+process before handing it to the step function:
+
+```@docs
+Snarl.Storage.pack
+Snarl.Storage.unpack!
+```

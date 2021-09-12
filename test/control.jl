@@ -243,6 +243,8 @@ function foreach_storage()::ParallelStorage
     add_per_process!(
         storage,
         "results_channel",
+        pack = (channel) -> RemoteChannel(() -> channel),
+        unpack = ThreadSafeRemoteChannel,
         value = Channel{Union{Int,Nothing}}(nprocs() + 1),
     )
     add_per_process!(storage, "context", make = OperationContext)
@@ -383,7 +385,6 @@ function check_d_foreach(; expected_used_processes::Int = nprocs(), flags...)::N
         d_foreach;
         is_distributed = true,
         finalize_process = finalize_process,
-        channel_names = "results_channel",
         flags...,
     )
     check_steps_did_run()
@@ -448,7 +449,6 @@ function check_dt_foreach(;
         dt_foreach;
         is_distributed = true,
         finalize_process = finalize_process,
-        channel_names = ["results_channel"],
         flags...,
     )
     check_steps_did_run()

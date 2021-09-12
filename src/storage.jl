@@ -10,17 +10,39 @@ import Base.AbstractLock
 import Base.ReentrantLock
 import Distributed: clear!
 
-export GlobalStorage, LocalStorage, ParallelStorage
-
-export has_per_process, has_per_step, has_per_thread
-export add_per_process!, add_per_step!, add_per_thread!
-export get_per_process, get_per_step, get_per_thread, get_lock, get_value
-export clear_per_process!, clear_per_thread!, clear_per_step!, clear!
-export forget_per_process!, forget_per_thread!, forget_per_step!, forget!
-export with_per_process, with_value
+export add_per_process!
+export add_per_step!
+export add_per_thread!
+export clear!
+export clear_per_process!
+export clear_per_step!
+export clear_per_thread!
+export forget!
+export forget_per_process!
+export forget_per_step!
+export forget_per_thread!
+export get_lock
+export get_per_process
+export get_per_step
+export get_per_thread
+export get_value
+export GlobalStorage
+export has_per_process
+export has_per_step
+export has_per_thread
+export LocalStorage
+export pack
+export ParallelStorage
+export unpack!
+export with_per_process
+export with_value
 
 """
-    GlobalStorage(; [make::Function=nothing, clear::Function=nothing, value::Any=nothing])
+    GlobalStorage(; [make::Union{Type,Function,Nothing}=nothing,
+                     pack::Union{Type,Function,Nothing}=nothing,
+                     unpack::Union{Type,Function,Nothing}=nothing,
+                     clear::Union{Function,Nothing}=nothing,
+                     value::Any=missing])
 
 Provide storage for a per-process ("global") value for a parallel algorithm.
 
@@ -29,15 +51,24 @@ the same instance, so either access would be read-only, thread-safe mutation, or
 need to coordinate their access in some way.
 
 The `make` function is used to lazily construct the initial value on each process. If an initial
-`value` is provided, there is no need to provide a `make` function. Note that such a value would be
-transmitted through the network to any worker process(es) using the value. For large values, it is
-often preferable to re-construct them on each process using the `make` function.
+`value` is provided, there is no need to provide a `make` function.
+
+Note that such a value would be transmitted through the network to any worker process(es) using the
+value. For large values, it is often preferable to re-construct them on each process using the
+`make` function. Therefore, it is possible to modify the value just before it is sent by passing it
+to an optional `pack` function, and modify it again on the worker processes by passing it to an
+optional `unpack` function. For example, a `Channel` can be packed into a `RemoteChannel` and then
+unpacked into a `ThreadSafeRemoteChannel` on the remote process.
 
 The `clear` function is used to release associated non-memory resources when the value is no longer
 needed, e.g. closing files. It is invoked with the value to clear.
 """
 mutable struct GlobalStorage
     make::Union{Type,Function,Nothing}
+
+    pack::Union{Type,Function,Nothing}
+
+    unpack::Union{Type,Function,Nothing}
 
     clear::Union{Function,Nothing}
 
@@ -47,17 +78,29 @@ mutable struct GlobalStorage
 
     function GlobalStorage(;
         make::Union{Type,Function,Nothing} = nothing,
+        pack::Union{Type,Function,Nothing} = nothing,
+        unpack::Union{Type,Function,Nothing} = nothing,
         clear::Union{Function,Nothing} = nothing,
-        value = nothing,
+        value = missing,
     )::GlobalStorage
-        if value == nothing
+        if ismissing(value)
             @assert make != nothing "GlobalStorage is missing both a make function and an initial value"
+            @assert pack == nothing "GlobalStorage specifies both a make function and a pack function"
+            @assert unpack == nothing "GlobalStorage specifies both a make function and an unpack function"
         else
             @assert make == nothing "GlobalStorage specifies both a make function and an initial value"
         end
-        return new(make, clear, value, ReentrantLock())
+        return new(make, pack, unpack, clear, value, ReentrantLock())
     end
 end
+
+Base.copy(storage::GlobalStorage) = GlobalStorage(
+    make = storage.make,
+    pack = storage.pack,
+    unpack = storage.unpack,
+    clear = storage.clear,
+    value = storage.value,
+)
 
 """
     get_value(storage::GlobalStorage)::Any
@@ -67,18 +110,9 @@ Get the value of a global storage.
 This will create the value if necessary using the registered `make` function.
 """
 function get_value(storage::GlobalStorage)::Any
-    if storage.value == nothing
-        @assert storage.make != nothing "Getting missing GlobalStorage without a make function"
-        lock(storage.lock)
-        try
-            if storage.value == nothing
-                storage.value = storage.make()
-            end
-        finally
-            unlock(storage.lock)
-        end
+    with_value(storage) do value
+        return value
     end
-    return storage.value
 end
 
 """
@@ -91,15 +125,16 @@ direct access to the value in parallel.
 This will create the value if necessary using the registered `make` function.
 """
 function with_value(body::Function, storage::GlobalStorage)::Any
-    lock(storage.lock)  # untested
+    lock(storage.lock)
     try
-        if storage.value == nothing  # untested
-            @assert storage.make != nothing "Getting missing GlobalStorage without a make function"  # untested
-            storage.value = storage.make()  # untested
+        if ismissing(storage.value)
+            @assert storage.make != nothing "Getting missing GlobalStorage without a make function"
+            storage.value = storage.make()
+            @assert !ismissing(storage.value)
         end
-        return body(storage.value)  # untested
+        return body(storage.value)
     finally
-        unlock(storage.lock)  # untested
+        unlock(storage.lock)
     end
 end
 
@@ -114,25 +149,25 @@ This is never invoked implicitly. It is only done if explicitly invoked. That is
 """
 function clear!(storage::GlobalStorage)::Nothing
     value = storage.value
-    if value != nothing
+    if !ismissing(value)
         lock(storage.lock)
         try
-            value = storage.value
-            storage.value = nothing
+            if storage.clear != nothing
+                storage.clear(value)  # untested
+            end
+            storage.value = missing
         finally
             unlock(storage.lock)
         end
-    end
-
-    if value != nothing && storage.clear != nothing
-        storage.clear(value)  # untested
     end
 
     return nothing
 end
 
 """
-    LocalStorage(make::Function; [clear::Function=nothing, reset::Function=nothing])
+    LocalStorage(make::Union{Type,Function};
+                 [clear::Union{Function,Nothing}=nothing,
+                  reset::Union{Function,Nothing}=nothing])
 
 Provide storage for a per-thread ("local") value for a parallel algorithm.
 
@@ -165,7 +200,7 @@ mutable struct LocalStorage
         make::Union{Type,Function},
         clear::Union{Function,Nothing} = nothing,
         reset::Union{Function,Nothing} = nothing,
-    ) = new(make, reset, clear, Array{Any,1}(nothing, nthreads()))
+    ) = new(make, reset, clear, Array{Any,1}(missing, nthreads()))
 end
 
 """
@@ -179,14 +214,18 @@ This will create the value if necessary using the registered `make` function.
 """
 function get_value(storage::LocalStorage, thread_id::Int = threadid())::Any
     value = @inbounds storage.values[thread_id]
-    if value == nothing
+
+    if ismissing(value)
         @assert storage.make != nothing "Getting missing LocalStorage without a make function"
         value = storage.make()
+        @assert !ismissing(value)
         @inbounds storage.values[thread_id] = value
     end
+
     if storage.reset != nothing
         storage.reset(value)
     end
+
     return value
 end
 
@@ -212,26 +251,32 @@ function clear!(storage::LocalStorage, thread_id::Int = 0)::Nothing
     if thread_id == 0
         if storage.clear != nothing
             for value in storage.values  # untested
-                if value != nothing  # untested
+                if !ismissing(value)  # untested
                     storage.clear(value)  # untested
                 end
             end
         end
-        storage.values[:] .= nothing
+        @inbounds storage.values[:] .= missing
 
     elseif thread_id > 0  # untested
-        value = storage.values[thread_id]  # untested
-        @inbounds storage.values[thread_id] = nothing  # untested
-        if value != nothing && storage.clear != nothing  # untested
-            storage.clear(value)  # untested
+        @inbounds value = storage.values[thread_id]  # untested
+        if !ismissing(value)  # untested
+            @inbounds storage.values[thread_id] = missing  # untested
+            if storage.clear != nothing  # untested
+                storage.clear(value)  # untested
+            end
         end
+
     else
         for clear_thread_id = 1:nthreads()  # untested
             clear_thread_id != -thread_id || continue  # untested
+
             @inbounds value = storage.values[clear_thread_id]  # untested
-            @inbounds storage.values[clear_thread_id] = nothing  # untested
-            if value != nothing && storage.clear != nothing  # untested
-                storage.clear(value)  # untested
+            if !ismissing(value)  # untested
+                @inbounds storage.values[clear_thread_id] = missing  # untested
+                if storage.clear != nothing  # untested
+                    storage.clear(value)  # untested
+                end
             end
         end
     end
@@ -267,7 +312,11 @@ mutable struct ParallelStorage
 
     per_step::Dict{String,LocalStorage}
 
-    ParallelStorage() = new(Dict{String,Any}(), Dict{String,Any}(), Dict{String,Any}())
+    ParallelStorage(
+        per_process::Dict{String,GlobalStorage} = Dict{String,GlobalStorage}(),
+        per_thread::Dict{String,LocalStorage} = Dict{String,LocalStorage}(),
+        per_step::Dict{String,LocalStorage} = Dict{String,LocalStorage}(),
+    ) = new(per_process, per_thread, per_step)
 end
 
 """
@@ -299,22 +348,34 @@ end
 
 """
     add_per_process!(storage::ParallelStorage, name::String;
-                     [make::Function, clear::Function, value::Any])
+                     [make::Union{Type,Function,Nothing}=nothing,
+                      pack::Union{Type,Function,Nothing}=nothing,
+                      unpack::Union{Type,Function,Nothing}=nothing,
+                      clear::Union{Function,Nothing}=nothing,
+                      value::Any=missing])
 
 Add a new per-process value to the storage under the specified `name`.
 
-Specify either a `make` function xor an initial `value`. Note that such a value would be transmitted
-through the network to any worker process(es) using the value. For large values, it is often
-preferable to re-construct them on each process using the `make` function.
+Specify either a `make` function xor an initial `value` with optional `pack` and `unpack` for
+sending the value through the network to any worker process(es) using the value. For large values,
+it is often preferable to re-construct them on each process using the `make` function.
 """
 function add_per_process!(
     storage::ParallelStorage,
     name::String;
     make::Union{Type,Function,Nothing} = nothing,
+    pack::Union{Type,Function,Nothing} = nothing,
+    unpack::Union{Type,Function,Nothing} = nothing,
     clear::Union{Function,Nothing} = nothing,
-    value = nothing,
+    value = missing,
 )::Nothing
-    storage.per_process[name] = GlobalStorage(make = make, clear = clear, value = value)
+    storage.per_process[name] = GlobalStorage(
+        make = make,
+        pack = pack,
+        unpack = unpack,
+        clear = clear,
+        value = value,
+    )
     return nothing
 end
 
@@ -334,8 +395,10 @@ function add_per_thread!(
 end
 
 """
-    add_per_step!(storage::ParallelStorage, name::String, make::Function, reset::Function;
-                  [clear::Function])
+    add_per_step!(storage::ParallelStorage, name::String,
+                  make::Union{Type,Function},
+                  reset::Function;
+                  [clear::Union{Function,Nothing}=nothing])
 
 Add a new per-step value to the storage under the specified `name`.
 """
@@ -550,6 +613,54 @@ function forget!(storage::ParallelStorage)::Nothing
     storage.per_process = Dict{String,Any}()
     storage.per_thread = Dict{String,Any}()
     storage.per_step = Dict{String,Any}()
+
+    return nothing
+end
+
+"""
+    pack(storage::ParallelStorage)::ParallelStorage
+
+Return a copy of the `storage` where all per-process values have been packed
+in preparation to being sent to a remote process.
+"""
+function pack(storage::ParallelStorage)::ParallelStorage
+    remote_storage = storage
+    did_copy = false
+
+    for (name, global_storage) in storage.per_process
+        if global_storage.pack == nothing
+            continue
+        end
+
+        if !did_copy
+            remote_storage = ParallelStorage(
+                copy(storage.per_process),
+                storage.per_thread,
+                storage.per_step,
+            )
+            did_copy = true
+        end
+
+        global_storage = copy(global_storage)
+        global_storage.value = global_storage.pack(global_storage.value)
+        remote_storage.per_process[name] = global_storage
+    end
+
+    return remote_storage
+end
+
+"""
+    unpack!(storage::ParallelStorage)::Nothing
+
+Unpack all per-process values in-place after receiving the `storage` in a remote process, before
+being used by the step function.
+"""
+function unpack!(storage::ParallelStorage)::Nothing
+    for (name, global_storage) in storage.per_process
+        if global_storage.unpack != nothing
+            global_storage.value = global_storage.unpack(global_storage.value)
+        end
+    end
 
     return nothing
 end
