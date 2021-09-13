@@ -38,11 +38,11 @@ export with_per_process
 export with_value
 
 """
-    GlobalStorage(; [make::Union{Type,Function,Nothing}=nothing,
-                     pack::Union{Type,Function,Nothing}=nothing,
-                     unpack::Union{Type,Function,Nothing}=nothing,
-                     clear::Union{Function,Nothing}=nothing,
-                     value::Any=missing])
+    GlobalStorage(; make::Union{Type,Function,Nothing}=nothing,
+                    pack::Union{Type,Function,Nothing}=nothing,
+                    unpack::Union{Type,Function,Nothing}=nothing,
+                    clear::Union{Function,Nothing}=nothing,
+                    value::Any=missing)
 
 Provide storage for a per-process ("global") value for a parallel algorithm.
 
@@ -166,8 +166,8 @@ end
 
 """
     LocalStorage(make::Union{Type,Function};
-                 [clear::Union{Function,Nothing}=nothing,
-                  reset::Union{Function,Nothing}=nothing])
+                 clear::Union{Function,Nothing}=nothing,
+                 reset::Union{Function,Nothing}=nothing)
 
 Provide storage for a per-thread ("local") value for a parallel algorithm.
 
@@ -204,7 +204,7 @@ mutable struct LocalStorage
 end
 
 """
-    get_value(storage::LocalStorage, [thread_id::Int=threadid()])::Any
+    get_value(storage::LocalStorage, thread_id::Int=threadid())::Any
 
 Get the value of a local storage for the specified thread (by default, the current thread).
 Accessing the data of another thread requires it be immutable, allow for thread-safe mutability, or
@@ -230,7 +230,7 @@ function get_value(storage::LocalStorage, thread_id::Int = threadid())::Any
 end
 
 """
-    clear!(storage::LocalStorage, [thread_id=0])
+    clear!(storage::LocalStorage, thread_id=0)
 
 Clear all or one of the values of a local storage. If a thread is specified, clear only the value
 for that thread. If a zero thread is specified, clear all the values of all the threads. If a
@@ -348,11 +348,11 @@ end
 
 """
     add_per_process!(storage::ParallelStorage, name::String;
-                     [make::Union{Type,Function,Nothing}=nothing,
-                      pack::Union{Type,Function,Nothing}=nothing,
-                      unpack::Union{Type,Function,Nothing}=nothing,
-                      clear::Union{Function,Nothing}=nothing,
-                      value::Any=missing])
+                     make::Union{Type,Function,Nothing}=nothing,
+                     pack::Union{Type,Function,Nothing}=nothing,
+                     unpack::Union{Type,Function,Nothing}=nothing,
+                     clear::Union{Function,Nothing}=nothing,
+                     value::Any=missing)
 
 Add a new per-process value to the storage under the specified `name`.
 
@@ -380,7 +380,8 @@ function add_per_process!(
 end
 
 """
-    add_per_thread!(storage::ParallelStorage, name::String, make=Function; [clear=Function])
+    add_per_thread!(storage::ParallelStorage, name::String;
+                    make=Function, clear=Union{Function,Nothing}=nothing)
 
 Add a new per-process value to the storage under the specified `name`.
 """
@@ -395,10 +396,10 @@ function add_per_thread!(
 end
 
 """
-    add_per_step!(storage::ParallelStorage, name::String,
+    add_per_step!(storage::ParallelStorage, name::String;
                   make::Union{Type,Function},
                   reset::Function;
-                  [clear::Union{Function,Nothing}=nothing])
+                  clear::Union{Function,Nothing}=nothing)
 
 Add a new per-step value to the storage under the specified `name`.
 """
@@ -507,7 +508,7 @@ function clear_per_process!(storage::ParallelStorage, name::String)::Nothing
 end
 
 """
-    clear_per_thread!(storage::LocalStorage, name::String, [thread_id::Int])
+    clear_per_thread!(storage::LocalStorage, name::String, thread_id::Int)
 
 Clear all or one of the values of a per-thread storage. If a thread is specified, clear only the
 value for that thread. If a negative thread is specified, clear all the other threads but keep the
