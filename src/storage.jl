@@ -57,8 +57,8 @@ Note that such a value would be transmitted through the network to any worker pr
 value. For large values, it is often preferable to re-construct them on each process using the
 `make` function. Therefore, it is possible to modify the value just before it is sent by passing it
 to an optional `pack` function, and modify it again on the worker processes by passing it to an
-optional `unpack` function. For example, a `Channel` can be packed into a `RemoteChannel` and then
-unpacked into a `ThreadSafeRemoteChannel` on the remote process.
+optional `unpack` function. For example, a `Channel` can be packed into a `RemoteChannel` for the
+remote process.
 
 The `clear` function is used to release associated non-memory resources when the value is no longer
 needed, e.g. closing files. It is invoked with the value to clear.
@@ -659,7 +659,7 @@ being used by the step function.
 function unpack!(storage::ParallelStorage)::Nothing
     for (name, global_storage) in storage.per_process
         if global_storage.unpack != nothing
-            global_storage.value = global_storage.unpack(global_storage.value)
+            global_storage.value = global_storage.unpack(global_storage.value)  # untested
         end
     end
 

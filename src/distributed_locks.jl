@@ -6,7 +6,7 @@ module DistributedLocks
 using Base.Threads
 using Distributed
 
-using ..DistributedChannels
+using ..DistributedRequests
 using ..Launched
 
 export setup_locks, drain_locks, forget_locks, teardown_locks, with_distributed_lock
@@ -44,7 +44,7 @@ function setup_locks(size::Int = 4)::Nothing
             for worker_id = 2:nprocs()
                 @spawnat worker_id begin
                     global local_locks_channel
-                    local_locks_channel = ThreadSafeRemoteChannel(remote_locks_channel)
+                    local_locks_channel = remote_locks_channel
                 end
             end
         end

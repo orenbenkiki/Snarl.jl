@@ -5,7 +5,7 @@ using Distributed
 @everywhere using Snarl.Control
 @everywhere using Snarl.Launched
 @everywhere using Snarl.Storage
-@everywhere using Snarl.DistributedChannels
+@everywhere using Snarl.DistributedRequests
 
 @everywhere import Snarl.Storage: clear!
 
@@ -30,7 +30,7 @@ remote_counters_channel = RemoteChannel(() -> local_counters_channel)
     if myid() == 1
         counters_channel = $local_counters_channel
     else
-        counters_channel = ThreadSafeRemoteChannel($remote_counters_channel)
+        counters_channel = $remote_counters_channel
     end
 end
 
@@ -244,7 +244,6 @@ function foreach_storage()::ParallelStorage
         storage,
         "results_channel",
         pack = (channel) -> RemoteChannel(() -> channel),
-        unpack = ThreadSafeRemoteChannel,
         value = Channel{Union{Int,Nothing}}(nprocs() + 1),
     )
     add_per_process!(storage, "context", make = OperationContext)

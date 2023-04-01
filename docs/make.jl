@@ -1,10 +1,16 @@
-using Documenter
+try
+    import Documenter
+catch _error
+    import Pkg
+    Pkg.add("Documenter")
+    import Documenter
+end
 
 push!(LOAD_PATH, "../src/")
 
 using Snarl
 
-makedocs(
+Documenter.makedocs(
     sitename = "Snarl.jl",
     modules = [Snarl],
     authors = "Oren Ben-Kiki",

@@ -6,7 +6,6 @@ module Control
 using Base.Threads
 using Distributed
 
-using ..DistributedChannels
 using ..Launched
 using ..Storage
 
@@ -446,7 +445,7 @@ function dt_foreach(
     if max_processes == nprocs() && max_threads == nothing
         max_runners = total_threads_count
         max_local_threads = nthreads()
-        worker_ids = [process for process in 1:nprocs() if process != myid()]
+        worker_ids = [process for process = 1:nprocs() if process != myid()]
         max_threads_of_workers = @inbounds threads_count_of_processes[worker_ids]
     else
         worker_ids = next_workers!(max_processes - 1)  # untested
@@ -947,11 +946,7 @@ end
 # Serving:
 
 function s_run_from_batches_channel(
-    batches_channel::Union{
-        Channel{Any},
-        RemoteChannel{Channel{Any}},
-        ThreadSafeRemoteChannel{Any},
-    },
+    batches_channel::Union{Channel{Any},RemoteChannel{Channel{Any}}},
     step::Function,
     batch_values,
     storage::Union{ParallelStorage,Nothing},
@@ -974,11 +969,10 @@ function t_run_from_remote_batches_channel(
     finalize_thread::Union{Function,Nothing},
     threads_count::Int,
 )::Nothing
-    general_batches_channel = ThreadSafeRemoteChannel(remote_batches_channel)
     @assert length(batch_values) == threads_count
     @sync @threads :static for index = 1:threads_count
         s_run_from_batches_channel(
-            general_batches_channel,
+            remote_batches_channel,
             step,
             (@inbounds batch_values[index]),
             storage,

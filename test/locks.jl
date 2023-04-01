@@ -2,7 +2,6 @@ using Distributed
 
 @everywhere using Base.Threads
 @everywhere using Snarl.Launched
-@everywhere using Snarl.DistributedChannels
 @everywhere using Snarl.DistributedLocks
 
 @everywhere function test_seen_lock()::Bool

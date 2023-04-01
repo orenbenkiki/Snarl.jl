@@ -12,7 +12,6 @@ using Distributed
 using Logging
 using Printf
 
-using ..DistributedChannels
 using ..Launched
 
 import Base.CoreLogging:
@@ -79,7 +78,7 @@ function setup_logging(
                 @spawnat worker_id begin
                     global_logger(
                         DistributedLogger(
-                            ThreadSafeRemoteChannel(remote_log_channel),
+                            remote_log_channel,
                             min_level,
                             show_time,
                             base_time,
@@ -146,7 +145,10 @@ end
 A logger which emits only one line per log, in a uniform format, for use in a distributed setting.
 """
 struct DistributedLogger <: AbstractLogger
-    log_channel::AbstractChannel{Union{Nothing,Array{UInt8,1}}}
+    log_channel::Union{
+        Channel{Union{Nothing,Array{UInt8,1}}},
+        RemoteChannel{Channel{Union{Nothing,Array{UInt8,1}}}},
+    }
     min_level::LogLevel
     show_time::Bool
     base_time::Union{Nothing,DateTime}

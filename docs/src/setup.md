@@ -28,17 +28,17 @@ To tell `Snarl` you have launched the worker processes, invoke:
 Snarl.Launched.launched
 ```
 
-If you did launch worker processes, you should write:
+That is, write:
 
 ```
 @everywhere using Snarl.Launched
 launched()
 ```
 
-Note you should invoked `launched()` even if you did not launch any worker processes. This would
-restrict the application to using the threads of a single physical machine. That said, a single
+Note you should do this even if you did not launch any worker processes; this would restrict the
+application to using the threads of a single physical machine. This is still useful as a single
 server machine can be very powerful these days (dozens of threads, dozens of hundreds of GBs of
-RAM), and even humble laptops can be pretty powerful (several threads, dozens of GBs of RAM). And
+RAM). Even humble laptops can be pretty powerful (several threads, dozens of GBs of RAM). And
 writing a pure multi-threaded application is simpler than a multi-process, multi-threaded one. That
 said, if this is all you want to do, then `Snarl` might be an overkill. You might want to use it in
 order to have a smooth migration path towards running the application on a cluster of servers.
@@ -82,7 +82,7 @@ Snarl.DistributedLogging.teardown_logging
 For example:
 
 ```
-# Configure the logging parameters based on command line options etc.
+# Configure the logging parameters (typically based on command line options).
 setup_logging(log_level = Logging.info, show_time = true, base_time = now())
 ```
 
@@ -94,28 +94,21 @@ due to multiple threads/processes logging at the same time; all messages from ev
 serialized to a single stream.
 
 In general `Snarl` requires us to be able to communicate between multiple threads of arbitrary
-(possibly different processes); logging is a trivial example. For historical reasons, Julia does
-**not** provide this functionality out of the box. Internally `Snarl` uses:
+processes. A common pattern is to send a request to a service worker thread and wait for a response.
+Ideally, one would like to use `Distributed.Future` to implement this idiom, but we can't since
+(at the time of writing this), `Distributed.Future` was not thread-safe(!). Instead, we use:
 
 ```@docs
-Snarl.DistributedChannels
-Snarl.DistributedChannels.ThreadSafeRemoteChannel
+Snarl.DistributedRequests
 ```
 
-However, this is **not** a general solution to the problem; it only works when the remote channel it
-is known to communicate with a different process, not with the current one.
-
-In addition, note you can't freely pass `Future` object across channels, because they are likewise
-**not** thread-safe. For the common pattern where a thread on some process is listening to requests
-on a channel and needs to send responses back, when the requesters might be other threads on the
-same process or remote processes, create a `Channel` to get the response on instead of creating a
-`Future` to wait for. Then, instead of sending this response channel as-is through the request
-channel, send the results of `request_response` instead; this will wrap the response channel in a
-`RemoteChannel` if the request channel leads to a different process, otherwise it will keep the
-response channel as-is for fast communication within the same process.
+Which creates a channel for the (possibly remote) service to send the single response to the
+requester. A minor comfort here is that we can use a local channel if both the requester and the
+service run on the same machine (in different threads of the same process). This is implemented
+by:
 
 ```@docs
-Snarl.DistributedChannels.request_response
+Snarl.DistributedRequests.request_response
 ```
 
 ## Setting up locks
@@ -165,8 +158,9 @@ if resource_does_not_exist()
     with_distributed_lock(name_of_resource) do is_first
         if is_first
             ... actually create the resource, which may take a long time ...
+        else
+            ... resource was created by someone else; we have exclusive access to it here ...
         end
-        ... exclusive access to the resource ...
     end
 end
 ... resource is now guaranteed to have been created ...

@@ -56,6 +56,7 @@ BEGIN {
     untested = 0
     tested = 0
 }
+$4 ~ /^\s*end\s*(#|$)/ { next }
 tolower($4) ~ /only seems untested/ { next }
 $3 == 0 && tolower($4) ~ /untested/ { next }
 $3 == 0 {
