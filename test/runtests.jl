@@ -35,7 +35,6 @@ macro test_set(args...)
     end
 end
 
-include("affinity.jl")
 include("launch.jl")
 include("locks.jl")
 include("control.jl")

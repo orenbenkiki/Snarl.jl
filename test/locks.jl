@@ -7,7 +7,7 @@ using Distributed
 
 @everywhere function test_seen_lock()::Bool
     seen_lock = false
-    @sync @threads for _ = 1:nthreads()
+    @sync @threads :static for _ = 1:nthreads()
         with_distributed_lock() do is_first
             if is_first
                 @assert !seen_lock

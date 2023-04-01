@@ -538,7 +538,7 @@ function t_foreach_up_to_nthreads(
 )::Nothing
     @assert batches_count <= max_threads
 
-    @sync @threads for batch_index = 1:batches_count
+    @sync @threads :static for batch_index = 1:batches_count
         s_foreach(
             step,
             batch_values_view(values, batch_size, batch_index),
@@ -564,7 +564,7 @@ function t_foreach_more_than_nthreads(
     @assert batches_count > max_threads
 
     next_batch_index = Atomic{Int}(max_threads + 1)
-    @sync @threads for batch_index = 1:max_threads
+    @sync @threads :static for batch_index = 1:max_threads
         while batch_index <= batches_count
             s_foreach(
                 step,
@@ -744,7 +744,7 @@ function dt_foreach_maximize_processes(
 
         used_threads_of_process = @inbounds used_threads_of_processes[myid()]
         @assert used_threads_of_process > 0
-        @threads for index = 1:used_threads_of_process
+        @threads :static for index = 1:used_threads_of_process
             if index == used_threads_of_process
                 send_batches(
                     remote_batches_channel,
@@ -976,7 +976,7 @@ function t_run_from_remote_batches_channel(
 )::Nothing
     general_batches_channel = ThreadSafeRemoteChannel(remote_batches_channel)
     @assert length(batch_values) == threads_count
-    @sync @threads for index = 1:threads_count
+    @sync @threads :static for index = 1:threads_count
         s_run_from_batches_channel(
             general_batches_channel,
             step,
@@ -998,7 +998,7 @@ function t_run_batches(
     simd::SimdFlag,
     finalize_thread::Union{Function,Nothing},
 )::Nothing
-    @sync @threads for values in batch_values
+    @sync @threads :static for values in batch_values
         s_foreach(step, values, storage = storage, simd = simd)
         finalize(finalize_thread, storage)
     end
