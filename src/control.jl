@@ -247,7 +247,7 @@ function t_foreach(
 
     batches_count, batch_size = batches_configuration(
         step,
-        values,
+        length(values),
         batch_factor,
         minimal_batch,
         storage,
@@ -338,7 +338,7 @@ function d_foreach(
 
     batches_count, batch_size = batches_configuration(
         step,
-        values,
+        length(values),
         batch_factor,
         minimal_batch,
         storage,
@@ -468,7 +468,7 @@ function dt_foreach(
 
     batches_count, batch_size = batches_configuration(
         step,
-        values,
+        length(values),
         batch_factor,
         minimal_batch,
         storage,
@@ -836,7 +836,7 @@ end
 
 function batches_configuration(
     step::Function,
-    values,
+    values_count::Int,
     batch_factor::Int,
     minimal_batch::Int,
     storage::Union{ParallelStorage,Nothing},
@@ -847,17 +847,11 @@ function batches_configuration(
     @assert minimal_batch > 0
     @assert runners_count > 1
 
-    if length(values) <= minimal_batch
-        return 1, length(values)
-    end
-
-    batches_count = runners_count * batch_factor
-    batch_size = length(values) / batches_count
-    if batch_size < minimal_batch
-        batches_count = floor(Int, length(values) / minimal_batch)
-        batch_size = length(values) / batches_count
-    end
-
+    full_batch_size_per_runner = values_count / runners_count
+    small_batch_size_per_runner = full_batch_size_per_runner / batch_factor
+    ideal_batch_size = max(small_batch_size_per_runner, minimal_batch)
+    batches_count = div(values_count, ideal_batch_size)
+    batch_size = values_count / batches_count
     @debug "batches_configuration" batches_count batch_size
     return batches_count, batch_size
 end
